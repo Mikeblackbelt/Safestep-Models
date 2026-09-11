@@ -1,5 +1,5 @@
 """
-Shared logging configuration for safestep_utils.
+Shared logging configuration for the util package.
 
 Import get_logger(__name__) from any module instead of calling
 logging.basicConfig() repeatedly.

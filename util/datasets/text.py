@@ -10,8 +10,8 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 from sklearn.model_selection import train_test_split
 
-from safestep_utils.datasets.config import DatasetConfig
-from safestep_utils.logging_config import get_logger
+from util.datasets.dataset_config import DatasetConfig
+from util.logging_config import get_logger
 
 logger = get_logger(__name__)
 
