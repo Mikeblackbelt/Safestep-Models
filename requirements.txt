@@ -1,0 +1,26 @@
+# Core ML
+numpy>=1.26
+torch>=2.2
+torchvision>=0.17
+transformers>=4.40
+xgboost>=2.0
+scikit-learn>=1.4
+scipy>=1.12
+scikit-image>=0.22
+pandas>=2.2
+Pillow>=10.3
+imagehash>=4.3
+
+# API
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.6
+python-multipart>=0.0.9
+httpx>=0.27
+
+# Training CLI
+python-dotenv>=1.0
+rich>=13.7
+
+# Testing
+pytest>=8.0

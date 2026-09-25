@@ -25,7 +25,7 @@ from torch.optim.lr_scheduler import LambdaLR
 
 from cart.config import CARTConfig
 from cart.detector import CARTDetector
-from safestep_utils.logging_config import get_logger
+from util.logging_config import get_logger
 
 logger = get_logger(__name__)
 
