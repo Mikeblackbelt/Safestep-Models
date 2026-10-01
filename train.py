@@ -19,6 +19,18 @@ python -m train --model all --data-dir data/ --workers 8
 
 # Resume from existing checkpoint
 python -m train --model cart --data-dir data/ --resume checkpoints/cart
+
+# Live dashboard: device-aware parallel sessions, ETA, charts
+python -m train --model all --data-dir data/ --dashboard
+
+# Preview the parallel plan and ETA without training
+python -m train --model all --data-dir data/ --dashboard --estimate-only
+
+# Hyper-parameter sweep, sessions parallelised to fit the hardware
+python -m train --model cart --dashboard --sweep lr=1e-5,3e-5 --sweep batch_size=8,16
+
+# Previous and partial runs, with charts
+python -m train --history
 """
 
 import argparse
@@ -52,6 +64,11 @@ from rich.rule import Rule
 from rich.table import Table
 from rich import print as rprint
 
+# Legacy Windows code pages can't encode the symbols used below; degrade instead of crashing.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(errors="replace")
+
 console = Console()
 
 # ── Project imports ─────────────────────────────────────────────────────────────
@@ -64,6 +81,15 @@ from cart.train import CARTTrainer
 from jaw.config import JAWConfig
 from jaw.detector import JAWDetector
 from jaw.train import JAWTrainer
+from training.data import load_image_split, load_text_split
+from training.history import RunRecord, RunRecorder, new_run_id
+from training.planner import (
+    CART_CPU_SAMPLES_PER_SEC as _CART_CPU_SAMPLES_PER_SEC,
+    GPU_SPEEDUP as _GPU_SPEEDUP,
+    JAW_CPU_SAMPLES_PER_SEC as _JAW_CPU_SAMPLES_PER_SEC,
+    MPS_SPEEDUP as _MPS_SPEEDUP,
+    total_units,
+)
 from util.logging_config import get_logger
 
 logger = get_logger("safestep.train_cli")
@@ -121,13 +147,8 @@ def device_report(device: str, workers: int) -> None:
 
 # ── Training time estimation ──────────────────────────────────────────────────────
 
-# Empirical throughput baselines (samples / second) on CPU.
-# These are deliberately conservative. GPU multipliers applied below.
-_CART_CPU_SAMPLES_PER_SEC = 12.0   # DistilBERT forward on short texts
-_JAW_CPU_SAMPLES_PER_SEC  = 4.0    # EfficientNet-B3 on 224×224 images
-
-_GPU_SPEEDUP = 8.0   # rough multiplier vs CPU for CUDA
-_MPS_SPEEDUP = 4.0   # rough multiplier vs CPU for MPS
+# Throughput baselines live in training.planner, which also calibrates them
+# from previous runs for the --dashboard planner.
 
 
 def _effective_throughput(base: float, device: str) -> float:
@@ -226,59 +247,89 @@ def print_estimate(model_name: str, n_train: int, n_val: int, estimate: dict) ->
     console.print(table)
 
 
-# ── Synthetic placeholder data (used when no real data dir supplied) ─────────────
-
-def _make_placeholder_text_data(n: int = 100) -> tuple[list, list]:
-    """Generate trivial placeholder text data for smoke-test runs."""
-    texts  = [f"Sample training sentence number {i}." for i in range(n)]
-    labels = ["human" if i % 2 == 0 else "ai_generated" for i in range(n)]
-    return texts, labels
-
+# ── Data loading ─────────────────────────────────────────────────────────────────
 
 def _load_text_split(data_dir: Path, split: str) -> tuple[list, list]:
-    """
-    Load {split}/texts.txt  (one text per line) and
-         {split}/labels.txt (one label per line) from data_dir.
-    Falls back to placeholder data if files are not found.
-    """
-    txt_file   = data_dir / split / "texts.txt"
-    label_file = data_dir / split / "labels.txt"
-    if txt_file.exists() and label_file.exists():
-        texts  = txt_file.read_text(encoding="utf-8").splitlines()
-        labels = label_file.read_text(encoding="utf-8").splitlines()
-        console.print(f"  [green]✓[/green] Loaded {len(texts):,} {split} samples from {data_dir / split}")
-        return texts, labels
-    else:
-        console.print(
-            f"  [yellow]⚠[/yellow]  No {split} data found at [dim]{txt_file}[/dim] — using placeholder data."
-        )
-        n = 200 if split == "train" else 50
-        return _make_placeholder_text_data(n)
+    return load_text_split(data_dir, split, console)
 
 
 def _load_image_split(data_dir: Path, split: str) -> tuple[list, list]:
-    """
-    Expect data_dir/{split}/{label}/*.{png,jpg,jpeg,webp}.
-    Falls back to placeholder (empty paths) if not found.
-    """
-    split_dir = data_dir / split
-    paths, labels = [], []
-    if split_dir.exists():
-        for label_dir in sorted(split_dir.iterdir()):
-            if label_dir.is_dir():
-                label = label_dir.name  # directory name = class label
-                for img in label_dir.glob("**/*"):
-                    if img.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
-                        paths.append(str(img))
-                        labels.append(label)
-        if paths:
-            console.print(f"  [green]✓[/green] Loaded {len(paths):,} {split} images from {split_dir}")
-            return paths, labels
+    return load_image_split(data_dir, split, console)
 
-    console.print(
-        f"  [yellow]⚠[/yellow]  No {split} images found at [dim]{split_dir}[/dim] — skipping (provide real data to train)."
-    )
-    return [], []
+
+# ── Shared training loop with progress + run recording ───────────────────────────
+
+def _fit_with_progress(
+    model: str,
+    trainer,
+    config,
+    train_x: list,
+    train_y: list,
+    val_x: list,
+    val_y: list,
+    device: str,
+    verbose: bool,
+    runs_dir: Path,
+    run_id: Optional[str],
+    estimated_secs: float,
+) -> None:
+    """Run trainer.fit with a Rich epoch bar, persisting a RunRecord for --history."""
+    total_epochs = config.num_epochs_frozen + config.num_epochs_finetune
+    recorder = RunRecorder(runs_dir, RunRecord(
+        run_id=run_id or new_run_id(),
+        session_id=model,
+        label=model,
+        model=model,
+        device=device,
+        threads=torch.get_num_threads(),
+        config=asdict(config),
+        n_train=len(train_x),
+        n_val=len(val_x),
+        total_epochs=total_epochs,
+        total_units=total_units(model, config, len(train_x), len(val_x)),
+        estimated_secs=estimated_secs,
+    ))
+    color = "blue" if model == "cart" else "magenta"
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        TimeRemainingColumn(),
+        console=console,
+        transient=False,
+    ) as progress:
+        epoch_task = progress.add_task(f"[{color}]{model.upper()} epochs", total=total_epochs)
+        epochs_done = [0]
+
+        def on_event(event: dict) -> None:
+            recorder.handle(event)
+            if event["type"] == "epoch":
+                epochs_done[0] += 1
+                progress.update(epoch_task, completed=epochs_done[0])
+                if verbose:
+                    console.print(
+                        f"  [dim][{event['stage']}] epoch {event['epoch']}/{event['epochs']} "
+                        f"loss={event['loss']:.4f} val_acc={event['val_acc']:.4f}[/dim]"
+                    )
+            elif event["type"] == "fusion" and verbose:
+                console.print(f"  [dim]fusion val_acc={event['val_acc']:.4f}[/dim]")
+
+        trainer.callback = on_event
+        try:
+            trainer.fit(train_x, train_y, val_x, val_y)
+        except KeyboardInterrupt:
+            recorder.finish("interrupted")
+            raise
+        except Exception as exc:
+            recorder.finish("failed", error=f"{type(exc).__name__}: {exc}")
+            raise
+        progress.update(epoch_task, completed=total_epochs)
+
+    recorder.finish("completed")
 
 
 # ── CART training entry-point ────────────────────────────────────────────────────
@@ -292,6 +343,8 @@ def train_cart(
     resume: Optional[Path],
     verbose: bool,
     config_overrides: dict,
+    runs_dir: Path = Path("runs"),
+    run_id: Optional[str] = None,
 ) -> bool:
     """Run the full CART training pipeline. Returns True on success."""
     console.print(Rule("[bold blue]CART — AI-Text Detector[/bold blue]"))
@@ -324,43 +377,10 @@ def train_cart(
         console.print(f"  [cyan]Resuming from checkpoint:[/cyan] {resume}")
         trainer.detector.load(resume)
 
-    # Training with a Rich progress bar wrapping each epoch
-    total_epochs = config.num_epochs_frozen + config.num_epochs_finetune
-
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        MofNCompleteColumn(),
-        TimeElapsedColumn(),
-        TimeRemainingColumn(),
-        console=console,
-        transient=False,
-    ) as progress:
-        epoch_task = progress.add_task("[blue]CART epochs", total=total_epochs)
-
-        # Monkey-patch the trainer's logger to tick the progress bar
-        original_info = logger.info
-
-        epoch_counter = [0]
-        def _patched_info(msg, *args, **kwargs):
-            original_info(msg, *args, **kwargs)
-            if "[frozen] epoch" in msg or "[finetune] epoch" in msg:
-                epoch_counter[0] += 1
-                progress.update(epoch_task, completed=epoch_counter[0])
-            if verbose:
-                console.print(f"  [dim]{msg}[/dim]")
-
-        import cart.train as _cart_train_mod
-        _cart_train_mod.logger.info = _patched_info  # type: ignore[attr-defined]
-
-        try:
-            trainer.fit(train_texts, train_labels, val_texts, val_labels)
-        finally:
-            _cart_train_mod.logger.info = original_info  # type: ignore[attr-defined]
-
-        progress.update(epoch_task, completed=total_epochs)
+    _fit_with_progress(
+        "cart", trainer, config, train_texts, train_labels, val_texts, val_labels,
+        device, verbose, runs_dir, run_id, est["total_secs"],
+    )
 
     # Save
     out_dir = checkpoint_dir / "cart"
@@ -387,6 +407,8 @@ def train_jaw(
     resume: Optional[Path],
     verbose: bool,
     config_overrides: dict,
+    runs_dir: Path = Path("runs"),
+    run_id: Optional[str] = None,
 ) -> bool:
     """Run the full JAW training pipeline. Returns True on success."""
     console.print(Rule("[bold magenta]JAW — AI-Image Detector[/bold magenta]"))
@@ -418,41 +440,10 @@ def train_jaw(
         console.print(f"  [cyan]Resuming from checkpoint:[/cyan] {resume}")
         trainer.detector.load(resume)
 
-    total_epochs = config.num_epochs_frozen + config.num_epochs_finetune
-
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        MofNCompleteColumn(),
-        TimeElapsedColumn(),
-        TimeRemainingColumn(),
-        console=console,
-        transient=False,
-    ) as progress:
-        epoch_task = progress.add_task("[magenta]JAW epochs", total=total_epochs)
-
-        original_info = logger.info
-        epoch_counter = [0]
-
-        def _patched_info(msg, *args, **kwargs):
-            original_info(msg, *args, **kwargs)
-            if "[frozen] epoch" in msg or "[finetune] epoch" in msg:
-                epoch_counter[0] += 1
-                progress.update(epoch_task, completed=epoch_counter[0])
-            if verbose:
-                console.print(f"  [dim]{msg}[/dim]")
-
-        import jaw.train as _jaw_train_mod
-        _jaw_train_mod.logger.info = _patched_info  # type: ignore[attr-defined]
-
-        try:
-            trainer.fit(train_paths, train_labels, val_paths, val_labels)
-        finally:
-            _jaw_train_mod.logger.info = original_info  # type: ignore[attr-defined]
-
-        progress.update(epoch_task, completed=total_epochs)
+    _fit_with_progress(
+        "jaw", trainer, config, train_paths, train_labels, val_paths, val_labels,
+        device, verbose, runs_dir, run_id, est["total_secs"],
+    )
 
     out_dir = checkpoint_dir / "jaw"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -496,6 +487,9 @@ def train_all_parallel(
     resume_cart: Optional[Path],
     resume_jaw: Optional[Path],
     verbose: bool,
+    runs_dir: Path = Path("runs"),
+    cart_overrides: Optional[dict] = None,
+    jaw_overrides: Optional[dict] = None,
 ) -> None:
     """
     Launch CART and JAW training in parallel subprocesses.
@@ -510,10 +504,11 @@ def train_all_parallel(
         workers=workers,
         estimate_only=estimate_only,
         verbose=verbose,
-        config_overrides={},
+        runs_dir=runs_dir,
+        run_id=new_run_id(),
     )
-    cart_args = {**shared, "resume": resume_cart}
-    jaw_args  = {**shared, "resume": resume_jaw}
+    cart_args = {**shared, "resume": resume_cart, "config_overrides": cart_overrides or {}}
+    jaw_args  = {**shared, "resume": resume_jaw, "config_overrides": jaw_overrides or {}}
 
     if device == "cpu" and not estimate_only:
         console.print(
@@ -539,6 +534,62 @@ def train_all_parallel(
             )
         train_cart(**cart_args)
         train_jaw(**jaw_args)
+
+
+# ── Dashboard mode ───────────────────────────────────────────────────────────────
+
+def run_dashboard_cli(args: argparse.Namespace, device: str, cart_overrides: dict, jaw_overrides: dict) -> None:
+    from training.dashboard import (
+        build_specs, parse_sweeps, render_hardware, render_plan, render_summary, run_dashboard,
+    )
+    from training.devices import profile_hardware
+    from training.history import load_history
+    from training.planner import make_plan
+
+    try:
+        sweeps = parse_sweeps(args.sweep)
+    except ValueError as exc:
+        console.print(f"[red]✗  {exc}[/red]")
+        sys.exit(2)
+
+    run_id = new_run_id()
+    models = ["cart", "jaw"] if args.model == "all" else [args.model]
+    console.print("[dim]Scanning training data…[/dim]")
+    specs, notes = build_specs(
+        models, args.data_dir, args.checkpoint_dir,
+        {"cart": cart_overrides, "jaw": jaw_overrides}, sweeps, run_id, console,
+    )
+    for note in notes:
+        console.print(f"  [yellow]⚠[/yellow]  {note}")
+    if not specs:
+        console.print("[red]✗  Nothing to train.[/red]")
+        sys.exit(1)
+
+    hw = profile_hardware(device)
+    history = load_history(args.runs_dir)
+    plan = make_plan(specs, hw, history, args.max_parallel)
+    console.print(render_hardware(hw))
+    console.print(render_plan(plan, specs))
+
+    if args.estimate_only:
+        console.print("\n[dim]--estimate-only flag set; no training was performed.[/dim]")
+        return
+
+    if args.model == "all":
+        resume = {m: (args.resume / m if args.resume else None) for m in models}
+    else:
+        resume = {args.model: args.resume}
+
+    states = run_dashboard(specs, hw, plan, run_id, args.data_dir, args.runs_dir, resume, history, console)
+
+    prev_best = {}
+    for rec in history:
+        if rec.status == "completed" and rec.final_acc is not None:
+            if rec.model not in prev_best or rec.final_acc > prev_best[rec.model].final_acc:
+                prev_best[rec.model] = rec
+    console.print(render_summary(states, prev_best))
+    console.print(f"[dim]Logs and run records: {args.runs_dir / run_id}  ·  "
+                  "compare runs with: python -m train --history[/dim]")
 
 
 # ── Argument parsing ─────────────────────────────────────────────────────────────
@@ -621,6 +672,45 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print per-epoch metrics to console",
     )
+
+    dash = parser.add_argument_group("dashboard & history")
+    dash.add_argument(
+        "--dashboard",
+        action="store_true",
+        help="Live full-screen dashboard: plans parallel sessions from device metrics, "
+             "shows ETA, utilisation, and accuracy/loss charts",
+    )
+    dash.add_argument(
+        "--sweep",
+        action="append",
+        default=[],
+        metavar="KEY=V1,V2",
+        help="Add a hyper-parameter sweep (repeatable). Keys: lr, batch_size, epochs_frozen, "
+             "epochs_finetune, or any config field. Implies --dashboard",
+    )
+    dash.add_argument(
+        "--max-parallel",
+        type=int,
+        default=None,
+        help="Cap the number of concurrent sessions chosen by the planner",
+    )
+    dash.add_argument(
+        "--history",
+        action="store_true",
+        help="Show previous and partial training runs with charts, then exit",
+    )
+    dash.add_argument(
+        "--history-limit",
+        type=int,
+        default=20,
+        help="Number of recent sessions to show with --history (default: 20)",
+    )
+    dash.add_argument(
+        "--runs-dir",
+        type=Path,
+        default=Path("runs"),
+        help="Where run records and logs are stored (default: runs/)",
+    )
     return parser
 
 
@@ -629,6 +719,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+
+    if args.history:
+        from training.dashboard import show_history
+        show_history(args.runs_dir, None if args.model == "all" else args.model, args.history_limit, console)
+        return
 
     # ── Banner ──────────────────────────────────────────────────────────────────
     console.print(
@@ -662,6 +757,10 @@ def main() -> None:
         jaw_overrides["lr_finetune"]    = args.lr
 
     # ── Dispatch ─────────────────────────────────────────────────────────────────
+    if args.dashboard or args.sweep:
+        run_dashboard_cli(args, device, cart_overrides, jaw_overrides)
+        return
+
     if args.model == "cart":
         train_cart(
             data_dir=args.data_dir,
@@ -672,6 +771,7 @@ def main() -> None:
             resume=args.resume,
             verbose=args.verbose,
             config_overrides=cart_overrides,
+            runs_dir=args.runs_dir,
         )
 
     elif args.model == "jaw":
@@ -684,6 +784,7 @@ def main() -> None:
             resume=args.resume,
             verbose=args.verbose,
             config_overrides=jaw_overrides,
+            runs_dir=args.runs_dir,
         )
 
     else:  # "all"
@@ -698,6 +799,9 @@ def main() -> None:
             resume_cart=resume_cart,
             resume_jaw=resume_jaw,
             verbose=args.verbose,
+            runs_dir=args.runs_dir,
+            cart_overrides=cart_overrides,
+            jaw_overrides=jaw_overrides,
         )
 
     if args.estimate_only:

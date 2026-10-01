@@ -18,9 +18,12 @@ pydantic>=2.6
 python-multipart>=0.0.9
 httpx>=0.27
 
-# Training CLI
+# Training CLI + dashboard
 python-dotenv>=1.0
 rich>=13.7
+psutil>=5.9
+# Optional: GPU utilisation in the dashboard on NVIDIA machines
+# nvidia-ml-py>=12.0
 
 # Testing
 pytest>=8.0

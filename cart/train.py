@@ -15,7 +15,8 @@ Usage:
     trainer.detector.save("checkpoints/cart")
 """
 
-from typing import List, Optional
+import math
+from typing import Callable, List, Optional
 
 import numpy as np
 import torch
@@ -29,6 +30,9 @@ from util.logging_config import get_logger
 
 logger = get_logger(__name__)
 
+# Receives progress events: {"type": "stage"|"batch"|"epoch"|"early_stop"|"fusion", "stage", "epoch", ...}
+ProgressCallback = Callable[[dict], None]
+
 
 def _linear_warmup_scheduler(optimizer, warmup_steps: int, total_steps: int):
     def lr_lambda(step):
@@ -41,10 +45,22 @@ def _linear_warmup_scheduler(optimizer, warmup_steps: int, total_steps: int):
 class CARTTrainer:
     """Orchestrates multi-stage CART training."""
 
-    def __init__(self, config: CARTConfig, device: str = "cpu"):
+    def __init__(
+        self,
+        config: CARTConfig,
+        device: str = "cpu",
+        callback: Optional[ProgressCallback] = None,
+    ):
         self.config = config
         self.device = device
         self.detector = CARTDetector(config, device=device)
+        self.callback = callback
+        self._stage: Optional[str] = None
+        self._epoch = 0
+
+    def _emit(self, event_type: str, **payload) -> None:
+        if self.callback is not None:
+            self.callback({"type": event_type, "stage": self._stage, "epoch": self._epoch, **payload})
 
     def _labels_to_ids(self, labels: List[str]) -> torch.Tensor:
         return torch.tensor([self.config.label2id[l] for l in labels], dtype=torch.long)
@@ -68,6 +84,7 @@ class CARTTrainer:
         model.train()
         total_loss = 0.0
         num_batches = 0
+        total_batches = math.ceil(len(texts) / self.config.train_batch_size)
 
         for batch_texts, batch_labels in self._iter_batches(
             texts, labels, self.config.train_batch_size, shuffle=True
@@ -88,6 +105,10 @@ class CARTTrainer:
 
             total_loss += loss.item()
             num_batches += 1
+            self._emit(
+                "batch", phase="train", batch=num_batches, n_batches=total_batches,
+                samples=len(batch_texts), loss=loss.item(),
+            )
 
         return total_loss / max(1, num_batches)
 
@@ -107,6 +128,7 @@ class CARTTrainer:
             outputs = model(input_ids=input_ids, attention_mask=attention_mask)
             preds = outputs["logits"].argmax(dim=-1).cpu().numpy()
             all_preds.extend(preds.tolist())
+            self._emit("batch", phase="eval", samples=len(batch_texts))
 
         all_preds = np.array(all_preds)
         accuracy = float((all_preds == label_ids).mean())
@@ -124,6 +146,8 @@ class CARTTrainer:
 
         # Stage 1: frozen backbone, train classifier head only
         logger.info("CART Stage 1: training classifier head (backbone frozen)")
+        self._stage = "frozen"
+        self._emit("stage", epochs=self.config.num_epochs_frozen)
         model.freeze_encoder()
         optimizer = AdamW(
             [p for p in model.parameters() if p.requires_grad],
@@ -134,15 +158,20 @@ class CARTTrainer:
         patience_counter = 0
 
         for epoch in range(self.config.num_epochs_frozen):
+            self._epoch = epoch + 1
             loss = self._run_neural_epoch(train_texts, train_labels, optimizer, None, criterion)
             metrics = self._evaluate_neural(val_texts, val_labels)
             logger.info(
                 f"  [frozen] epoch {epoch + 1}/{self.config.num_epochs_frozen} "
                 f"loss={loss:.4f} val_acc={metrics['accuracy']:.4f}"
             )
+            self._emit("epoch", epochs=self.config.num_epochs_frozen, loss=loss, val_acc=metrics["accuracy"])
 
         # Stage 2: unfreeze, fine-tune end-to-end at lower LR with warmup
         logger.info("CART Stage 2: fine-tuning full backbone")
+        self._stage = "finetune"
+        self._epoch = 0
+        self._emit("stage", epochs=self.config.num_epochs_finetune)
         model.unfreeze_encoder()
         optimizer = AdamW(
             model.parameters(),
@@ -154,12 +183,14 @@ class CARTTrainer:
         scheduler = _linear_warmup_scheduler(optimizer, self.config.warmup_steps, total_steps)
 
         for epoch in range(self.config.num_epochs_finetune):
+            self._epoch = epoch + 1
             loss = self._run_neural_epoch(train_texts, train_labels, optimizer, scheduler, criterion)
             metrics = self._evaluate_neural(val_texts, val_labels)
             logger.info(
                 f"  [finetune] epoch {epoch + 1}/{self.config.num_epochs_finetune} "
                 f"loss={loss:.4f} val_acc={metrics['accuracy']:.4f}"
             )
+            self._emit("epoch", epochs=self.config.num_epochs_finetune, loss=loss, val_acc=metrics["accuracy"])
 
             if metrics["accuracy"] > best_val_acc:
                 best_val_acc = metrics["accuracy"]
@@ -168,6 +199,7 @@ class CARTTrainer:
                 patience_counter += 1
                 if patience_counter >= self.config.early_stopping_patience:
                     logger.info(f"  Early stopping at epoch {epoch + 1} (patience exceeded)")
+                    self._emit("early_stop")
                     break
 
     def _fit_fusion(self, val_texts: List[str], val_labels: List[str]) -> None:
@@ -177,6 +209,9 @@ class CARTTrainer:
         to the neural model's own training distribution.
         """
         logger.info("CART Stage 3: fitting fusion (heuristic + neural) meta-classifier")
+        self._stage = "fusion"
+        self._epoch = 0
+        self._emit("stage", epochs=0)
         neural_probs = self.detector._neural_probs(val_texts)
         heuristic_feats = self.detector.heuristics.extract_batch(val_texts)
         fused = self.detector.fusion.build_features(neural_probs, heuristic_feats)
@@ -187,6 +222,7 @@ class CARTTrainer:
         preds = self.detector.fusion.predict(fused)
         accuracy = float((preds == label_ids).mean())
         logger.info(f"  Fusion model val accuracy: {accuracy:.4f}")
+        self._emit("fusion", val_acc=accuracy)
         logger.info(f"  Top fusion features: {list(self.detector.fusion.feature_importance().items())[:5]}")
 
     def fit(
