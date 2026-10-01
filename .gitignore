@@ -217,6 +217,7 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# SafeStep: trained model weights and local datasets
+# SafeStep: trained model weights, local datasets, training run history
 checkpoints/
 data/
+runs/

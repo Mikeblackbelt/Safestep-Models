@@ -13,6 +13,7 @@ Detection models for AI-generated and malicious content.
 ```
 cart/       CART text detector (config, model, heuristics, fusion, detector, trainer)
 jaw/        JAW image detector (config, model, frequency features, preprocessing, detector, trainer)
+training/   Training dashboard: device metrics, load planner, parallel sessions, run history, charts
 util/       Shared dataset handling, loaders, and logging
 api/        Python functional API + FastAPI REST service (see api/README.md)
 tests/      pytest suite for the API
@@ -41,6 +42,34 @@ python -m train --model all --data-dir data/ --workers 8
 
 Checkpoints are written to `checkpoints/cart` and `checkpoints/jaw` by default. Model weights and
 datasets are not committed (`checkpoints/` and `data/` are gitignored).
+
+### Training dashboard
+
+```bash
+# Live full-screen dashboard
+python -m train --model all --data-dir data/ --dashboard
+
+# See the plan (memory, throughput, parallelism, ETA) without training
+python -m train --model all --data-dir data/ --dashboard --estimate-only
+
+# Hyper-parameter sweep; sessions run in parallel where the hardware allows
+python -m train --model cart --sweep lr=1e-5,3e-5 --sweep batch_size=8,16
+
+# Previous and partial runs, with accuracy / throughput charts
+python -m train --history
+```
+
+Before launching, the planner measures free RAM/VRAM and cores, estimates each session's peak memory
+and throughput, and simulates every feasible level of parallelism to pick the shortest schedule
+(capped with `--max-parallel`). Throughput estimates start from conservative baselines and are
+calibrated from your own previous runs on the same device type, so ETAs get more accurate over time.
+
+While training, the dashboard shows per-session progress and live ETA, per-process CPU/RAM, system
+utilisation, and validation-accuracy and loss charts overlaid with your best previous run. Each
+session runs in its own process and logs to `runs/<run_id>/<session>.log`.
+
+Every run (dashboard or not) is recorded under `runs/` after each epoch. If training is interrupted
+or crashes, the metrics up to the last finished epoch are kept and show up as *partial* in `--history`.
 
 ## Serving
 

@@ -15,7 +15,8 @@ Usage:
     trainer.detector.save("checkpoints/jaw")
 """
 
-from typing import List, Union
+import math
+from typing import Callable, List, Optional, Union
 from pathlib import Path
 
 import numpy as np
@@ -30,14 +31,29 @@ from util.logging_config import get_logger
 
 logger = get_logger(__name__)
 
+# Receives progress events: {"type": "stage"|"batch"|"epoch"|"early_stop", "stage", "epoch", ...}
+ProgressCallback = Callable[[dict], None]
+
 
 class JAWTrainer:
     """Orchestrates 2-stage JAW training."""
 
-    def __init__(self, config: JAWConfig, device: str = "cpu"):
+    def __init__(
+        self,
+        config: JAWConfig,
+        device: str = "cpu",
+        callback: Optional[ProgressCallback] = None,
+    ):
         self.config = config
         self.device = device
         self.detector = JAWDetector(config, device=device)
+        self.callback = callback
+        self._stage: Optional[str] = None
+        self._epoch = 0
+
+    def _emit(self, event_type: str, **payload) -> None:
+        if self.callback is not None:
+            self.callback({"type": event_type, "stage": self._stage, "epoch": self._epoch, **payload})
 
     def _labels_to_ids(self, labels: List[str]) -> torch.Tensor:
         return torch.tensor([self.config.label2id[l] for l in labels], dtype=torch.long)
@@ -67,6 +83,7 @@ class JAWTrainer:
         model.train()
         total_loss = 0.0
         num_batches = 0
+        total_batches = math.ceil(len(paths) / self.config.train_batch_size)
 
         for batch_paths, batch_labels in self._iter_batches(
             paths, labels, self.config.train_batch_size, shuffle=True
@@ -87,6 +104,10 @@ class JAWTrainer:
 
             total_loss += loss.item()
             num_batches += 1
+            self._emit(
+                "batch", phase="train", batch=num_batches, n_batches=total_batches,
+                samples=len(batch_paths), loss=loss.item(),
+            )
 
         if scheduler is not None:
             scheduler.step()
@@ -112,6 +133,7 @@ class JAWTrainer:
             outputs = model(images=image_tensor, freq_features=freq_tensor)
             preds = outputs["logits"].argmax(dim=-1).cpu().numpy()
             all_preds.extend(preds.tolist())
+            self._emit("batch", phase="eval", samples=len(batch_paths))
 
         all_preds = np.array(all_preds)
         accuracy = float((all_preds == label_ids).mean())
@@ -132,6 +154,8 @@ class JAWTrainer:
 
         # Stage 1: frozen backbone
         logger.info("JAW Stage 1: training frequency branch + head (backbone frozen)")
+        self._stage = "frozen"
+        self._emit("stage", epochs=self.config.num_epochs_frozen)
         model.freeze_backbone()
         optimizer = AdamW(
             [p for p in model.parameters() if p.requires_grad],
@@ -140,15 +164,20 @@ class JAWTrainer:
         )
 
         for epoch in range(self.config.num_epochs_frozen):
+            self._epoch = epoch + 1
             loss = self._run_epoch(train_paths, train_labels, optimizer, None, criterion)
             metrics = self._evaluate(val_paths, val_labels)
             logger.info(
                 f"  [frozen] epoch {epoch + 1}/{self.config.num_epochs_frozen} "
                 f"loss={loss:.4f} val_acc={metrics['accuracy']:.4f}"
             )
+            self._emit("epoch", epochs=self.config.num_epochs_frozen, loss=loss, val_acc=metrics["accuracy"])
 
         # Stage 2: unfreeze, fine-tune end-to-end
         logger.info("JAW Stage 2: fine-tuning full model")
+        self._stage = "finetune"
+        self._epoch = 0
+        self._emit("stage", epochs=self.config.num_epochs_finetune)
         model.unfreeze_backbone()
         optimizer = AdamW(
             model.parameters(),
@@ -158,12 +187,14 @@ class JAWTrainer:
         scheduler = CosineAnnealingLR(optimizer, T_max=self.config.num_epochs_finetune)
 
         for epoch in range(self.config.num_epochs_finetune):
+            self._epoch = epoch + 1
             loss = self._run_epoch(train_paths, train_labels, optimizer, scheduler, criterion)
             metrics = self._evaluate(val_paths, val_labels)
             logger.info(
                 f"  [finetune] epoch {epoch + 1}/{self.config.num_epochs_finetune} "
                 f"loss={loss:.4f} val_acc={metrics['accuracy']:.4f}"
             )
+            self._emit("epoch", epochs=self.config.num_epochs_finetune, loss=loss, val_acc=metrics["accuracy"])
 
             if metrics["accuracy"] > best_val_acc:
                 best_val_acc = metrics["accuracy"]
@@ -172,6 +203,7 @@ class JAWTrainer:
                 patience_counter += 1
                 if patience_counter >= self.config.early_stopping_patience:
                     logger.info(f"  Early stopping at epoch {epoch + 1} (patience exceeded)")
+                    self._emit("early_stop")
                     break
 
         logger.info("JAW training complete.")
