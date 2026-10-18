@@ -240,7 +240,10 @@ python -m train --model jaw --demo
 # Test CART training pipeline
 python -m train --model cart --demo
 
-# Test both models simultaneously
+# Test the Attack / Beast / Warhammer phishing pipeline
+python -m train --model phishing --demo
+
+# Test CART + JAW simultaneously
 python -m train --model all --demo
 ```
 
@@ -250,6 +253,7 @@ Measure throughput, total epochs, and ETA on your current hardware without train
 ```bash
 python -m train --model jaw --data-dir data/ --estimate-only
 python -m train --model cart --data-dir data/ --estimate-only
+python -m train --model phishing --data-dir data/ --estimate-only
 ```
 
 ### 3. Train on GPU, Apple Silicon, or CPU (`--device`)
@@ -300,7 +304,23 @@ python -m train --model jaw --data-dir data/ --resume checkpoints/jaw
 
 # Resume CART from checkpoint
 python -m train --model cart --data-dir data/ --resume checkpoints/cart
+
+# Resume phishing (warm-starts Warhammer; Attack and Beast refit in seconds)
+python -m train --model phishing --data-dir data/ --resume checkpoints/phishing
 ```
+
+### 8. Phishing Pipeline Training (`--model phishing`)
+Training runs three stages, in order:
+
+| Stage | Model | Trained on | Cost |
+|---|---|---|---|
+| 1. Attack | Char n-gram TF-IDF + logistic regression | train split | seconds |
+| 2. Beast | XGBoost on Attack's score + 18 phishing indicators | val split (held out from Attack) | seconds |
+| 3. Warhammer | DistilBERT, frozen head then full fine-tune | train split, early-stopped on val | minutes–hours |
+
+Data is read from `{data-dir}/phishing/` (or `{data-dir}/`): `enron_spam/{spam,ham}/*.txt`, `uci_phishing.data`, and/or `phishtank.csv`. You need both phishing and legitimate samples, so pair PhishTank (phishing only) with another source. `--epochs-frozen`, `--epochs-finetune`, `--batch-size` and `--lr` apply to Warhammer. `--dashboard`, `--sweep` and `--history` don't cover phishing yet.
+
+With `-v`, the final log line shows how many validation samples each stage decided. That accuracy is optimistic because Beast was fit on the same split.
 
 ### 7. Run History & Chart Comparisons (`--history`)
 Inspect past and partial runs with terminal charts comparing accuracy and loss over time:
@@ -356,6 +376,27 @@ trainer = CARTTrainer(config, device="cpu")
 trainer.fit(train_texts, train_labels, val_texts, val_labels)
 
 trainer.detector.save("checkpoints/cart")
+```
+
+### Train Phishing in Python
+```python
+from phishing.config import PhishingConfig
+from phishing.train import PhishingTrainer
+from util.manager import SafeStepDataManager
+
+dm = SafeStepDataManager()
+splits = dm.get_phishing_data()
+train_texts, train_labels = splits["train"]   # labels: 'phishing' / 'legitimate'
+val_texts, val_labels = splits["val"]
+
+# use_warhammer=False trains only Attack + Beast (no DistilBERT, CPU-friendly)
+config = PhishingConfig(num_epochs_frozen=1, num_epochs_finetune=3)
+trainer = PhishingTrainer(config, device="cpu")
+trainer.fit(train_texts, train_labels, val_texts, val_labels)
+trainer.detector.save("checkpoints/phishing")
+
+for r in trainer.detector.predict(["Verify your password at http://192.168.4.20/login"]):
+    print(r["label"], r["p_phishing"], r["stage"])   # stage: attack | beast | warhammer
 ```
 
 ---

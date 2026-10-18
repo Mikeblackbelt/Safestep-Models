@@ -1,10 +1,26 @@
 """
 SafeStep Training CLI
 =====================
-Parallelized, device-aware training launcher for CART and JAW models.
+Parallelized, device-aware training launcher for the CART, JAW and Phishing models.
+
+Models
+------
+cart      AI-generated text detector (DistilBERT + heuristics, XGBoost fusion)
+jaw       AI-generated image detector (EfficientNet-B3 + frequency features)
+phishing  Attack -> Beast -> Warhammer escalation pipeline for emails/URLs
+all       CART + JAW (phishing is trained separately)
+
+Checkpoints are written to {--checkpoint-dir}/{model}/.
 
 Usage examples
 --------------
+# Train the phishing pipeline (data from data/phishing/ or data/)
+python -m train --model phishing --data-dir data/
+
+# Phishing smoke test on generated sample emails
+python -m train --model phishing --demo -v
+
+
 # Estimate time only (no training)
 python -m train --model cart --data-dir data/ --estimate-only
 
