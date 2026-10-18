@@ -23,7 +23,7 @@ except ImportError:
     HAS_PIL = False
     Image = None
 
-VALID_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
+VALID_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff", ".tif"}
 
 
 class ImageDataset:

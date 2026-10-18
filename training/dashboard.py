@@ -81,12 +81,13 @@ def build_specs(
     sweeps: Sequence[Tuple[str, List[str]]],
     run_id: str,
     console: Console,
+    allow_demo: bool = False,
 ) -> Tuple[List[SessionSpec], List[str]]:
     """Expand models × sweep grid into session specs. Returns (specs, notes)."""
     specs: List[SessionSpec] = []
     notes: List[str] = []
     for model in models:
-        train_x, _, val_x, _ = load_splits(model, data_dir, console)
+        train_x, _, val_x, _ = load_splits(model, data_dir, console, allow_demo=allow_demo)
         if not train_x:
             notes.append(f"{model.upper()}: no training data under {data_dir} — skipped")
             continue
