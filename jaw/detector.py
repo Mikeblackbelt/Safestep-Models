@@ -75,6 +75,6 @@ class JAWDetector:
 
     def load(self, save_dir: Path) -> None:
         save_dir = Path(save_dir)
-        state_dict = torch.load(save_dir / "jaw_model.pt", map_location=self.device)
+        state_dict = torch.load(save_dir / "jaw_model.pt", map_location=self.device, weights_only=True)
         self.model.load_state_dict(state_dict)
         self.model.to(self.device)

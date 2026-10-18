@@ -10,6 +10,12 @@ Detection models and pipelines for AI-generated text, AI-generated images, and m
 
 Phishing samples only escalate to the next, more expensive stage while `p(phishing)` sits inside that stage's uncertainty band (`attack_escalate_low/high`, `beast_escalate_low/high` in `PhishingConfig`); each prediction reports which `stage` decided it. Train with `python train.py phishing` (or `--demo`); checkpoints go to `checkpoints/phishing/`.
 
+## 📚 Documentation
+
+- [Architecture](docs/architecture.md): model designs, data flow, checkpoint files
+- [Training](docs/training.md): full `train.py` / `train.sh` flag reference, data layouts, demo mode, resume
+- [Deployment](docs/deployment.md): running the API, environment variables, Docker, production checklist
+
 ---
 
 ## ⚡ Quickstart in 3 Steps
@@ -34,7 +40,7 @@ cp .env.example .env
 You can either use your own datasets or generate ready-to-train sample data with one command:
 
 ```bash
-# Generate sample datasets for CART and JAW in data/
+# Generate sample datasets for CART, JAW, and Phishing in data/
 python -m train --prepare-data all --data-dir data/
 ```
 
@@ -97,7 +103,7 @@ data/
 ├── train/
 │   ├── REAL/           # Auto-normalized to 'authentic'
 │   └── FAKE/           # Auto-normalized to 'ai_generated'
-└── test/ (or val/)
+└── val/            # train.py only reads train/ and val/; import a test/ split with util.manager --cifake
     ├── REAL/
     └── FAKE/
 ```
@@ -123,11 +129,9 @@ Folder names are automatically normalized (case-insensitive):
 ##### CIFAKE (60,000 Real & 60,000 AI Images)
 Download from [CIFAKE on Kaggle](https://www.kaggle.com/datasets/birdy654/cifake-real-and-ai-generated-synthetic-images) or GitHub, then:
 ```bash
-# Point directly to your extracted CIFAKE folder:
-python -m train --model jaw --data-dir /path/to/cifake
-
-# Or import and organize into standard data/jaw format:
+# Import and organize into standard data/jaw train/val format, then train:
 python -m util.manager --cifake /path/to/cifake --export data/jaw
+python -m train --model jaw --data-dir data/jaw
 ```
 
 ##### GenImage & ArtiFact
@@ -309,7 +313,7 @@ python -m train --model cart --data-dir data/ --resume checkpoints/cart
 python -m train --model phishing --data-dir data/ --resume checkpoints/phishing
 ```
 
-### 8. Phishing Pipeline Training (`--model phishing`)
+### 7. Phishing Pipeline Training (`--model phishing`)
 Training runs three stages, in order:
 
 | Stage | Model | Trained on | Cost |
@@ -322,7 +326,7 @@ Data is read from `{data-dir}/phishing/` (or `{data-dir}/`): `enron_spam/{spam,h
 
 With `-v`, the final log line shows how many validation samples each stage decided. That accuracy is optimistic because Beast was fit on the same split.
 
-### 7. Run History & Chart Comparisons (`--history`)
+### 8. Run History & Chart Comparisons (`--history`)
 Inspect past and partial runs with terminal charts comparing accuracy and loss over time:
 
 ```bash
@@ -341,6 +345,7 @@ You can also use the data loaders and trainers directly in Python scripts:
 
 ### Train JAW in Python
 ```python
+import torch
 from jaw.config import JAWConfig
 from jaw.train import JAWTrainer
 from util.manager import SafeStepDataManager
@@ -403,7 +408,7 @@ for r in trainer.detector.predict(["Verify your password at http://192.168.4.20/
 
 ## 🌐 Model Serving & Inference
 
-Once models are trained (or using default initialized checkpoints), start the FastAPI service:
+Once models are trained, start the FastAPI service (it serves CART and JAW; phishing isn't exposed over HTTP yet). Without checkpoints in `checkpoints/cart` and `checkpoints/jaw` the server still starts but runs untrained models. Check `weights_found` in `GET /models`. See [docs/deployment.md](docs/deployment.md) for env vars and Docker.
 
 ```bash
 # Launch API server on port 8000

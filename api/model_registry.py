@@ -23,6 +23,10 @@ from jaw.detector import JAWDetector
 logger = logging.getLogger("safestep.api.registry")
 
 
+class ModelUnavailableError(RuntimeError):
+    """Raised when a model has no trained weights and mock fallback is disabled."""
+
+
 class SafeStepModelRegistry:
     """Central registry and manager for SafeStep models."""
 
@@ -61,6 +65,14 @@ class SafeStepModelRegistry:
     def device(self) -> str:
         return self._device
 
+    def _require_weights(self, model_id: str, loaded: bool, path) -> None:
+        """Refuse to serve untrained weights unless mock fallback is enabled."""
+        if not loaded and not self.config.enable_mock_fallback:
+            raise ModelUnavailableError(
+                f"{model_id} checkpoint not loaded from {path}; "
+                "mount trained weights or set SAFESTEP_MOCK_FALLBACK=true"
+            )
+
     # -----------------------------------------------------------------------
     # CART Detector Management
     # -----------------------------------------------------------------------
@@ -70,6 +82,7 @@ class SafeStepModelRegistry:
         with self._lock:
             if self._cart_detector is None:
                 self._load_cart(self.config.cart_checkpoint_dir)
+            self._require_weights("cart", self._cart_weights_loaded, self._cart_checkpoint_path)
             return self._cart_detector
 
     def _load_cart(self, checkpoint_dir: Optional[Union[str, Path]]) -> None:
@@ -126,6 +139,7 @@ class SafeStepModelRegistry:
         with self._lock:
             if self._jaw_detector is None:
                 self._load_jaw(self.config.jaw_checkpoint_dir)
+            self._require_weights("jaw", self._jaw_weights_loaded, self._jaw_checkpoint_path)
             return self._jaw_detector
 
     def _load_jaw(self, checkpoint_dir: Optional[Union[str, Path]]) -> None:

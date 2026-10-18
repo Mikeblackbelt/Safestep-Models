@@ -77,7 +77,7 @@ class CARTDetector:
     def load(self, save_dir: Path) -> None:
         save_dir = Path(save_dir)
         self.neural_model.load_state_dict(
-            torch.load(save_dir / "neural_model.pt", map_location=self.device)
+            torch.load(save_dir / "neural_model.pt", map_location=self.device, weights_only=True)
         )
         self.neural_model.to(self.device)
         self.fusion.load(save_dir / "fusion_model.json")

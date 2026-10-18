@@ -607,7 +607,7 @@ def train_phishing(
     if resume and (resume / "warhammer.pt").exists() and trainer.detector.warhammer is not None:
         console.print(f"  [cyan]Resuming Warhammer from checkpoint:[/cyan] {resume}")
         trainer.detector.warhammer.load_state_dict(
-            torch.load(resume / "warhammer.pt", map_location=trainer.detector.device)
+            torch.load(resume / "warhammer.pt", map_location=trainer.detector.device, weights_only=True)
         )
 
     def on_event(event: dict) -> None:

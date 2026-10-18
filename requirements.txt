@@ -1,6 +1,6 @@
 # Core ML
 numpy>=1.26
-torch>=2.2
+torch>=2.6
 torchvision>=0.17
 transformers>=4.40
 xgboost>=2.0

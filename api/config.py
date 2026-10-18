@@ -36,6 +36,9 @@ class APIConfig:
     max_batch_size: int = 128
     max_upload_size_bytes: int = 25 * 1024 * 1024  # 25 MB
 
+    # Shared secret required in the X-Admin-Token header for model reloads
+    admin_token: Optional[str] = None
+
     def __post_init__(self):
         # Resolve environment variable overrides
         if os.getenv("SAFESTEP_API_HOST"):
@@ -59,6 +62,15 @@ class APIConfig:
         elif self.jaw_checkpoint_dir is None:
             default_path = Path("checkpoints/jaw")
             self.jaw_checkpoint_dir = default_path
+
+        cors_env = os.getenv("SAFESTEP_CORS_ORIGINS")
+        if cors_env is not None:
+            self.cors_origins = [o.strip() for o in cors_env.split(",") if o.strip()]
+        mock_env = os.getenv("SAFESTEP_MOCK_FALLBACK")
+        if mock_env is not None:
+            self.enable_mock_fallback = mock_env.strip().lower() in ("1", "true", "yes")
+        # Gates POST /models/{id}/reload; unset means reload is open (dev only).
+        self.admin_token = os.getenv("SAFESTEP_ADMIN_TOKEN") or None
 
         if os.getenv("SAFESTEP_CART_THRESHOLD"):
             self.cart_decision_threshold = float(os.environ["SAFESTEP_CART_THRESHOLD"])

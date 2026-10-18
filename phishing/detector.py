@@ -127,6 +127,6 @@ class PhishingDetector:
         self.beast.load(save_dir / "beast.json")
         warhammer_path = save_dir / "warhammer.pt"
         if self.warhammer is not None and warhammer_path.exists():
-            self.warhammer.load_state_dict(torch.load(warhammer_path, map_location=self.device))
+            self.warhammer.load_state_dict(torch.load(warhammer_path, map_location=self.device, weights_only=True))
             self.warhammer.to(self.device)
             self.warhammer_ready = True

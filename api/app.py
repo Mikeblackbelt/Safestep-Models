@@ -6,13 +6,16 @@ Provides endpoints for single and batch text detection, image detection, and mod
 from contextlib import asynccontextmanager
 import io
 import logging
+import secrets
 import time
+from pathlib import Path
 from typing import List, Optional
 
 from fastapi import (
     FastAPI,
     File,
     Form,
+    Header,
     HTTPException,
     Query,
     Request,
@@ -23,7 +26,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from api.config import default_api_config
-from api.model_registry import registry
+from api.model_registry import ModelUnavailableError, registry
 from api.schemas import (
     BatchImageDetectionResponse,
     BatchTextDetectionRequest,
@@ -87,6 +90,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(ModelUnavailableError)
+async def model_unavailable_handler(request: Request, exc: ModelUnavailableError):
+    return JSONResponse(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content={"detail": str(exc)})
 
 
 @app.middleware("http")
@@ -180,12 +188,34 @@ def get_model(model_id: str):
     summary="Reload model checkpoint",
     tags=["Models"],
 )
-def reload_model(model_id: str, request: Optional[ReloadModelRequest] = None):
+def reload_model(
+    model_id: str,
+    request: Optional[ReloadModelRequest] = None,
+    x_admin_token: Optional[str] = Header(default=None),
+):
     """
     Force reload model weights from a specified checkpoint path or default path.
     Allows hot-reloading weights after a training run completes without restarting the server.
+    Requires the X-Admin-Token header when SAFESTEP_ADMIN_TOKEN is set; custom paths must
+    sit under the configured checkpoint directories.
     """
+    expected = default_api_config.admin_token
+    if expected and not (x_admin_token and secrets.compare_digest(x_admin_token, expected)):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or missing X-Admin-Token")
+
     path = request.checkpoint_path if request else None
+    if path:
+        allowed_roots = [
+            Path(p).resolve().parent
+            for p in (default_api_config.cart_checkpoint_dir, default_api_config.jaw_checkpoint_dir)
+            if p
+        ]
+        resolved = Path(path).resolve()
+        if not any(resolved.is_relative_to(root) for root in allowed_roots):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="checkpoint_path must be inside the configured checkpoint directory",
+            )
     mid = model_id.lower()
     if mid == "cart":
         loaded = registry.reload_cart(path)
@@ -236,6 +266,8 @@ def detect_text(
             threshold=payload.threshold,
             include_features=include_features,
         )
+    except ModelUnavailableError:
+        raise
     except Exception as e:
         logger.error(f"Error in detect_text endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
@@ -263,6 +295,8 @@ def detect_batch_text(payload: BatchTextDetectionRequest):
             count=len(results),
             latency_ms=duration_ms,
         )
+    except ModelUnavailableError:
+        raise
     except Exception as e:
         logger.error(f"Error in detect_batch_text endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
@@ -303,6 +337,8 @@ async def detect_image(
         )
         return result
     except HTTPException:
+        raise
+    except ModelUnavailableError:
         raise
     except Exception as e:
         logger.error(f"Error in detect_image endpoint: {e}", exc_info=True)
@@ -350,6 +386,8 @@ def detect_image_json(payload: ImageDetectionJsonRequest):
             threshold=payload.threshold,
             source_identifiers=[identifier],
         )
+    except ModelUnavailableError:
+        raise
     except Exception as e:
         logger.error(f"Error in detect_image_json endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -393,6 +431,8 @@ async def detect_batch_images(
             count=len(results),
             latency_ms=duration_ms,
         )
+    except ModelUnavailableError:
+        raise
     except Exception as e:
         logger.error(f"Error in batch image detection: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
@@ -435,6 +475,8 @@ async def detect_unified(
             text_threshold=text_threshold,
             image_threshold=image_threshold,
         )
+    except ModelUnavailableError:
+        raise
     except Exception as e:
         logger.error(f"Error in detect_unified endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))

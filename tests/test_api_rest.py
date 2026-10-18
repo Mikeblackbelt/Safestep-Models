@@ -145,6 +145,29 @@ def test_reload_endpoint(client):
     assert resp.json()["reloaded"] is True
 
 
+def test_reload_requires_admin_token(client, monkeypatch):
+    """With SAFESTEP_ADMIN_TOKEN configured, reload rejects missing/wrong tokens."""
+    from api.config import default_api_config
+    monkeypatch.setattr(default_api_config, "admin_token", "s3cret")
+    assert client.post("/models/cart/reload", json={}).status_code == 401
+    assert client.post("/models/cart/reload", json={}, headers={"X-Admin-Token": "nope"}).status_code == 401
+    assert client.post("/models/cart/reload", json={}, headers={"X-Admin-Token": "s3cret"}).status_code == 200
+
+
+def test_reload_rejects_path_outside_checkpoints(client):
+    resp = client.post("/models/cart/reload", json={"checkpoint_path": "/etc"})
+    assert resp.status_code == 400
+
+
+def test_missing_weights_return_503_without_mock_fallback(client, monkeypatch):
+    from api.model_registry import registry
+    monkeypatch.setattr(registry.config, "enable_mock_fallback", False)
+    monkeypatch.setattr(registry, "_cart_weights_loaded", False)
+    monkeypatch.setattr(registry, "_cart_detector", object())
+    resp = client.post("/api/v1/detect/text", json={"text": "hello world"})
+    assert resp.status_code == 503
+
+
 def test_safestep_client_sdk(client, sample_assets):
     """Test SafeStepClient SDK against ASGI app."""
     from api.client import SafeStepClient
