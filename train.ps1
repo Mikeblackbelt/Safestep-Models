@@ -135,14 +135,14 @@ $Rest = @()
 if ($CmdArgs.Count -gt 1) { $Rest = @($CmdArgs[1..($CmdArgs.Count - 1)]) }
 
 function Split-Model([string]$Default) {
-    # Returns @(model, remaining-args)
+    # Returns @{ Model = <name>; Rest = <string[] of remaining args> }
     $m = $Default
-    $r = $script:Rest
-    if ($r.Count -gt 0 -and ($script:Models -contains ([string]$r[0]).ToLower())) {
-        $m = ([string]$r[0]).ToLower()
-        if ($r.Count -gt 1) { $r = @($r[1..($r.Count - 1)]) } else { $r = @() }
+    [string[]]$r = @($script:Rest)
+    if ($r.Count -gt 0 -and ($script:Models -contains $r[0].ToLower())) {
+        $m = $r[0].ToLower()
+        if ($r.Count -gt 1) { [string[]]$r = $r[1..($r.Count - 1)] } else { [string[]]$r = @() }
     }
-    return , @($m, $r)
+    return @{ Model = $m; Rest = $r }
 }
 
 switch ($Cmd.ToLower()) {
@@ -156,16 +156,16 @@ switch ($Cmd.ToLower()) {
     { $Models -contains $_ } { Invoke-Py (@('train.py', '--model', $Cmd.ToLower()) + $Rest) }
     'demo' {
         $s = Split-Model 'all'
-        Invoke-Py (@('train.py', '--model', $s[0], '--demo') + @($s[1]))
+        Invoke-Py (@('train.py', '--model', $s.Model, '--demo') + $s.Rest)
     }
     { @('prepare', 'prep-data', 'sample') -contains $_ } {
         $s = Split-Model 'all'
-        $r = @($s[1])
+        [string[]]$r = $s.Rest
         # Bare path (not a flag) -> treat as --data-dir
         if ($r.Count -gt 0 -and -not ([string]$r[0]).StartsWith('-')) {
             $r = @('--data-dir') + $r
         }
-        Invoke-Py (@('train.py', '--prepare-data', $s[0]) + $r)
+        Invoke-Py (@('train.py', '--prepare-data', $s.Model) + $r)
     }
     'inspect' {
         $dir = 'data'
@@ -182,7 +182,7 @@ switch ($Cmd.ToLower()) {
     { @('dashboard', 'dash') -contains $_ } { Invoke-Py (@('train.py', '--model', 'all', '--dashboard') + $Rest) }
     { @('estimate', 'est') -contains $_ } {
         $s = Split-Model 'all'
-        Invoke-Py (@('train.py', '--model', $s[0], '--estimate-only') + @($s[1]))
+        Invoke-Py (@('train.py', '--model', $s.Model, '--estimate-only') + $s.Rest)
     }
     { @('history', 'hist', 'logs') -contains $_ } { Invoke-Py (@('train.py', '--history') + $Rest) }
     default { Invoke-Py (@('train.py') + $CmdArgs) }

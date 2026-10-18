@@ -327,7 +327,7 @@ python -m train --model cart --data-dir data/ --resume checkpoints/cart
 python -m train --model phishing --data-dir data/ --resume checkpoints/phishing
 ```
 
-A missing resume directory or checkpoint file (CART: `neural_model.pt` + `fusion_model.json`; JAW: `jaw_model.pt`; phishing: `warhammer.pt`) is an error, not a fresh start.
+A missing resume directory or checkpoint file (CART: `neural_model.pt` + `fusion_model.json`; JAW: `jaw_model.pt`; phishing: `warhammer.pt`, unless `use_warhammer=False`, in which case `--resume` is ignored) is an error, not a fresh start.
 
 ### 7. Phishing Pipeline Training (`--model phishing`)
 Training runs three stages, in order:

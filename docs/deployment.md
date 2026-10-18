@@ -35,7 +35,7 @@ python -m api.cli predict-unified --text "..." --image img.png [--text-threshold
 | POST | `/api/v1/detect/phishing` (`{"text", "threshold"?, "max_stage"?}`), `/api/v1/detect/phishing/batch` (`{"texts": [...], ...}`) |
 | POST | `/api/v1/detect/unified` (form fields `text`, `file`, `text_threshold`, `image_threshold`, `phishing_threshold`, `include_phishing`) |
 
-Phishing results carry `p_phishing`, `label` (`phishing`/`legitimate`), `stage` (which stage decided) and `is_mock`. The unified endpoint also runs phishing on `text` and returns `phishing_result`; it only feeds `risk_score` when real weights are loaded.
+Phishing results carry `p_phishing`, `label` (`phishing`/`legitimate`), `stage` (which stage decided) and `is_mock`. The unified endpoint also runs phishing on `text` and returns `phishing_result`; it only feeds `risk_score` when real weights are loaded. If phishing fails (e.g. `503` with mock fallback off), the unified request still succeeds with `phishing_result: null`, the reason in `phishing_error`, and "Phishing: skipped" in `summary`.
 
 `model_id` is `cart`, `jaw` or `phishing`. Every response carries an `X-Process-Time-Ms` header.
 

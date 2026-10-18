@@ -330,6 +330,7 @@ class SafeStepService:
         text_res: Optional[TextDetectionResult] = None
         image_res: Optional[ImageDetectionResult] = None
         phishing_res: Optional[PhishingDetectionResult] = None
+        phishing_error: Optional[str] = None
 
         if text and text.strip():
             text_res = self.predict_text(text, threshold=text_threshold)
@@ -337,6 +338,7 @@ class SafeStepService:
                 try:
                     phishing_res = self.predict_phishing(text, threshold=phishing_threshold)
                 except Exception as e:
+                    phishing_error = f"{type(e).__name__}: {e}"
                     logger.warning(f"Phishing analysis skipped in unified endpoint: {e}")
 
         if image is not None:
@@ -373,12 +375,15 @@ class SafeStepService:
             overall_risk = "LOW"
 
         latency_ms = round((time.perf_counter() - start_time) * 1000, 2)
+        if phishing_error:
+            summaries.append("Phishing: skipped (model unavailable)")
         summary = f"Risk {overall_risk} ({risk_score:.2f}). " + " | ".join(summaries)
 
         return UnifiedDetectionResponse(
             text_result=text_res,
             image_result=image_res,
             phishing_result=phishing_res,
+            phishing_error=phishing_error,
             overall_risk=overall_risk,
             risk_score=risk_score,
             summary=summary,

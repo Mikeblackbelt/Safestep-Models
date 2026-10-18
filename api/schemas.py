@@ -157,6 +157,9 @@ class UnifiedDetectionResponse(BaseModel):
     text_result: Optional[TextDetectionResult] = None
     image_result: Optional[ImageDetectionResult] = None
     phishing_result: Optional[PhishingDetectionResult] = None
+    phishing_error: Optional[str] = Field(
+        None, description="Why phishing analysis was skipped (e.g. model unavailable); null when it ran"
+    )
     overall_risk: str = Field(..., description="'HIGH', 'MEDIUM', 'LOW', or 'UNKNOWN'")
     risk_score: float = Field(..., ge=0.0, le=1.0, description="Composite synthetic content risk score")
     summary: str = Field(..., description="Human-readable assessment summary")

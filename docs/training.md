@@ -170,7 +170,7 @@ python train.py all --demo
 |---|---|---|
 | `cart` | `checkpoints/cart` | `neural_model.pt` and `fusion_model.json` (loads the full detector) |
 | `jaw` | `checkpoints/jaw` | `jaw_model.pt` |
-| `phishing` | `checkpoints/phishing` | `warhammer.pt` (warm-starts Warhammer only; Attack and Beast always refit) |
+| `phishing` | `checkpoints/phishing` | `warhammer.pt` (warm-starts Warhammer only; Attack and Beast always refit). Not required, and `--resume` ignored, when `use_warhammer=False` |
 | `all` | `checkpoints` (the root) | `<root>/cart/...` and `<root>/jaw/...` |
 
 If the resume directory doesn't exist or a required file is missing, that model doesn't train: an error panel lists the expected files. `train.py` exits with status 1 when any requested training fails (including a bad `--resume` or missing data). Checkpoints are always written to `--checkpoint-dir/<model>` and overwrite what's there.

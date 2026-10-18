@@ -256,6 +256,23 @@ def test_unified_includes_phishing(phishing_client):
     resp = phishing_client.post("/api/v1/detect/unified", data={"text": "Verify your password now"})
     assert resp.status_code == 200
     assert resp.json()["phishing_result"] is not None
+    assert resp.json()["phishing_error"] is None
+
+
+def test_unified_reports_phishing_error(phishing_client, monkeypatch):
+    """A phishing failure doesn't fail the unified request but is surfaced, not swallowed."""
+    from api.service import service
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("phishing model unavailable")
+
+    monkeypatch.setattr(service, "predict_phishing", boom)
+    resp = phishing_client.post("/api/v1/detect/unified", data={"text": "Verify your password now"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["phishing_result"] is None
+    assert "phishing model unavailable" in body["phishing_error"]
+    assert "Phishing: skipped" in body["summary"]
 
 
 def test_sdk_predict_phishing(phishing_client):

@@ -599,10 +599,15 @@ def train_phishing(
 ) -> bool:
     """Run Attack -> Beast -> Warhammer training. Returns True on success."""
     console.print(Rule("[bold red]Phishing — Attack / Beast / Warhammer[/bold red]"))
-    if not _check_resume(resume, PHISHING_RESUME_FILES, "Phishing"):
-        return False
-
     config = PhishingConfig(**config_overrides) if config_overrides else PhishingConfig()
+
+    # Resuming only warm-starts Warhammer (Attack/Beast refit in seconds), so
+    # warhammer.pt is only required when Warhammer is going to be trained.
+    if config.use_warhammer and not _check_resume(resume, PHISHING_RESUME_FILES, "Phishing"):
+        return False
+    if resume and not config.use_warhammer:
+        console.print("  [yellow]⚠[/yellow]  --resume ignored: Warhammer is disabled and Attack/Beast always refit.")
+        resume = None
 
     console.print("[dim]Loading phishing data…[/dim]")
     splits = _load_phishing_splits(data_dir, demo)

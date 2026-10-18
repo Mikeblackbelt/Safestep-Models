@@ -33,6 +33,23 @@ def test_resume_ok_and_none(tmp_path):
     assert train._check_resume(None, train.JAW_RESUME_FILES, "JAW") is True
 
 
+def test_phishing_resume_not_required_without_warhammer(tmp_path):
+    """Attack/Beast-only checkpoints have no warhammer.pt; resume shouldn't block that run."""
+    ok = train.train_phishing(
+        data_dir=tmp_path / "no_data",
+        checkpoint_dir=tmp_path / "ckpt",
+        device="cpu",
+        workers=1,
+        estimate_only=True,
+        resume=tmp_path / "attack_beast_only",
+        verbose=False,
+        config_overrides={"use_warhammer": False},
+        runs_dir=tmp_path / "runs",
+        demo=True,
+    )
+    assert ok is True
+
+
 def test_all_bad_resume_returns_false(tmp_path):
     ok = train.train_all_parallel(
         data_dir=tmp_path, checkpoint_dir=tmp_path, device="cpu", workers=1,
