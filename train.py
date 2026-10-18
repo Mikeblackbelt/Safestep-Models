@@ -81,6 +81,8 @@ from cart.train import CARTTrainer
 from jaw.config import JAWConfig
 from jaw.detector import JAWDetector
 from jaw.train import JAWTrainer
+from phishing.config import PhishingConfig
+from phishing.train import PhishingTrainer
 from training.data import load_image_split, load_text_split
 from training.history import RunRecord, RunRecorder, new_run_id
 from training.planner import (
@@ -249,12 +251,12 @@ def print_estimate(model_name: str, n_train: int, n_val: int, estimate: dict) ->
 
 # ── Data loading ─────────────────────────────────────────────────────────────────
 
-def _load_text_split(data_dir: Path, split: str) -> tuple[list, list]:
-    return load_text_split(data_dir, split, console)
+def _load_text_split(data_dir: Path, split: str, allow_demo: bool = False) -> tuple[list, list]:
+    return load_text_split(data_dir, split, console, allow_demo=allow_demo)
 
 
-def _load_image_split(data_dir: Path, split: str) -> tuple[list, list]:
-    return load_image_split(data_dir, split, console)
+def _load_image_split(data_dir: Path, split: str, allow_demo: bool = False) -> tuple[list, list]:
+    return load_image_split(data_dir, split, console, allow_demo=allow_demo)
 
 
 # ── Shared training loop with progress + run recording ───────────────────────────
@@ -345,6 +347,7 @@ def train_cart(
     config_overrides: dict,
     runs_dir: Path = Path("runs"),
     run_id: Optional[str] = None,
+    demo: bool = False,
 ) -> bool:
     """Run the full CART training pipeline. Returns True on success."""
     console.print(Rule("[bold blue]CART — AI-Text Detector[/bold blue]"))
@@ -353,11 +356,26 @@ def train_cart(
 
     # Load splits
     console.print("[dim]Loading training data…[/dim]")
-    train_texts, train_labels = _load_text_split(data_dir, "train")
-    val_texts,   val_labels   = _load_text_split(data_dir, "val")
+    train_texts, train_labels = _load_text_split(data_dir, "train", allow_demo=demo)
+    val_texts,   val_labels   = _load_text_split(data_dir, "val", allow_demo=demo)
 
     if not train_texts:
-        console.print("[red]✗  No training data available for CART. Aborting.[/red]")
+        console.print(
+            Panel(
+                "[bold red]✗  No training text data found[/bold red]\n\n"
+                f"Searched under: [dim]{data_dir}[/dim]\n\n"
+                "[bold]Supported text formats:[/bold]\n"
+                "  1. Text & Labels files:   [cyan]data/train/texts.txt[/cyan] and [cyan]data/train/labels.txt[/cyan]\n"
+                "  2. CSV file:              [cyan]data/train.csv[/cyan] (with 'text' and 'label' columns)\n"
+                "  3. JSONL file:            [cyan]data/train.jsonl[/cyan]\n"
+                "  4. Class folders:         [cyan]data/human/*.txt[/cyan] and [cyan]data/ai_generated/*.txt[/cyan] (auto-split 80/20)\n\n"
+                "[bold]Quick solutions:[/bold]\n"
+                "  • [yellow]Run instant demo:[/yellow]      python -m train --model cart --demo\n"
+                "  • [yellow]Generate sample data:[/yellow]  python -m train --prepare-data cart\n",
+                title="CART Training - Data Missing",
+                border_style="red",
+            )
+        )
         return False
 
     # Time estimate
@@ -409,6 +427,7 @@ def train_jaw(
     config_overrides: dict,
     runs_dir: Path = Path("runs"),
     run_id: Optional[str] = None,
+    demo: bool = False,
 ) -> bool:
     """Run the full JAW training pipeline. Returns True on success."""
     console.print(Rule("[bold magenta]JAW — AI-Image Detector[/bold magenta]"))
@@ -417,11 +436,27 @@ def train_jaw(
 
     # Load splits
     console.print("[dim]Loading training data…[/dim]")
-    train_paths, train_labels = _load_image_split(data_dir, "train")
-    val_paths,   val_labels   = _load_image_split(data_dir, "val")
+    train_paths, train_labels = _load_image_split(data_dir, "train", allow_demo=demo)
+    val_paths,   val_labels   = _load_image_split(data_dir, "val", allow_demo=demo)
 
     if not train_paths:
-        console.print("[red]✗  No training images available for JAW. Aborting.[/red]")
+        console.print(
+            Panel(
+                "[bold red]✗  No training images found[/bold red]\n\n"
+                f"Searched under: [dim]{data_dir}[/dim]\n\n"
+                "[bold]Supported folder layouts:[/bold]\n"
+                "  1. Standard split:        [cyan]data/train/authentic/*.jpg[/cyan] and [cyan]data/train/ai_generated/*.jpg[/cyan]\n"
+                "  2. Real/Fake split:        [cyan]data/train/real/*.jpg[/cyan] and [cyan]data/train/fake/*.jpg[/cyan]\n"
+                "  3. Kaggle CIFAKE:          [cyan]data/train/REAL/*.jpg[/cyan] and [cyan]data/train/FAKE/*.jpg[/cyan]\n"
+                "  4. Un-split class folders: [cyan]data/real/*.jpg[/cyan] and [cyan]data/fake/*.jpg[/cyan] (auto-split 80/20)\n\n"
+                "[bold]Quick solutions:[/bold]\n"
+                "  • [yellow]Run instant demo:[/yellow]      python -m train --model jaw --demo\n"
+                "  • [yellow]Generate sample data:[/yellow]  python -m train --prepare-data jaw\n"
+                "  • [yellow]Import CIFAKE folder:[/yellow] python -m util.manager --cifake /path/to/cifake\n",
+                title="JAW Training - Data Missing",
+                border_style="red",
+            )
+        )
         return False
 
     # Time estimate
@@ -452,6 +487,134 @@ def train_jaw(
 
     console.print(
         f"\n[bold green]✓  JAW training complete[/bold green]  "
+        f"saved → [cyan]{out_dir}[/cyan]  "
+        f"wall-time: [bold]{_fmt_duration(elapsed)}[/bold]"
+    )
+    return True
+
+
+# ── Phishing (Attack / Beast / Warhammer) training entry-point ───────────────────
+
+def _load_phishing_splits(data_dir: Path, demo: bool) -> dict:
+    """Load phishing data from {data_dir}/phishing or {data_dir}, generating samples in demo mode."""
+    from util.loaders.phishing import PhishingDatasetLoader
+
+    root = data_dir / "phishing" if (data_dir / "phishing").exists() else data_dir
+    loader = PhishingDatasetLoader()
+    loader.load_enron_spam(root / "enron_spam")
+    loader.load_uci_phishing(root / "uci_phishing.data")
+    loader.load_phishtank(root / "phishtank.csv")
+
+    if len(set(loader.text_dataset.labels)) < 2 and demo:
+        demo_dir = data_dir / ".demo_phishing_cache"
+        console.print("  [cyan]ℹ[/cyan] Generating sample phishing emails for demo…")
+        PhishingDatasetLoader.create_sample_dataset(demo_dir)
+        loader = PhishingDatasetLoader()
+        loader.load_enron_spam(demo_dir / "enron_spam")
+
+    if len(set(loader.text_dataset.labels)) < 2:
+        return {}
+    return loader.get_splits()
+
+
+def estimate_phishing_time(n_train: int, n_val: int, config: PhishingConfig, device: str) -> dict:
+    """Attack and Beast fit in seconds; Warhammer dominates and trains like CART's backbone."""
+    shallow_secs = (n_train + n_val) * 0.002
+    if not config.use_warhammer:
+        return {"total_epochs": 0, "frozen_epochs": 0, "finetune_epochs": 0,
+                "secs_per_epoch": 0.0, "fusion_secs": shallow_secs, "total_secs": shallow_secs}
+    tput = _effective_throughput(_CART_CPU_SAMPLES_PER_SEC, device)
+    total_epochs = config.num_epochs_frozen + config.num_epochs_finetune
+    secs_per_epoch = (n_train / tput) + (n_val / tput) * 0.5
+    return {
+        "total_epochs": total_epochs,
+        "frozen_epochs": config.num_epochs_frozen,
+        "finetune_epochs": config.num_epochs_finetune,
+        "secs_per_epoch": secs_per_epoch,
+        "fusion_secs": shallow_secs,
+        "total_secs": secs_per_epoch * total_epochs + shallow_secs,
+    }
+
+
+def train_phishing(
+    data_dir: Path,
+    checkpoint_dir: Path,
+    device: str,
+    workers: int,
+    estimate_only: bool,
+    resume: Optional[Path],
+    verbose: bool,
+    config_overrides: dict,
+    runs_dir: Path = Path("runs"),
+    run_id: Optional[str] = None,
+    demo: bool = False,
+) -> bool:
+    """Run Attack -> Beast -> Warhammer training. Returns True on success."""
+    console.print(Rule("[bold red]Phishing — Attack / Beast / Warhammer[/bold red]"))
+
+    config = PhishingConfig(**config_overrides) if config_overrides else PhishingConfig()
+
+    console.print("[dim]Loading phishing data…[/dim]")
+    splits = _load_phishing_splits(data_dir, demo)
+    if not splits:
+        console.print(
+            Panel(
+                "[bold red]✗  Need both phishing and legitimate samples[/bold red]\n\n"
+                f"Searched under: [dim]{data_dir / 'phishing'}[/dim] and [dim]{data_dir}[/dim]\n\n"
+                "[bold]Supported sources:[/bold]\n"
+                "  1. Enron spam:  [cyan]enron_spam/spam/*.txt[/cyan] and [cyan]enron_spam/ham/*.txt[/cyan]\n"
+                "  2. UCI phishing websites: [cyan]uci_phishing.data[/cyan]\n"
+                "  3. PhishTank URLs: [cyan]phishtank.csv[/cyan] (phishing only; pair with a legitimate source)\n\n"
+                "[bold]Quick solutions:[/bold]\n"
+                "  • [yellow]Run instant demo:[/yellow]      python -m train --model phishing --demo\n"
+                "  • [yellow]Generate sample data:[/yellow]  python -m train --prepare-data phishing\n",
+                title="Phishing Training - Data Missing",
+                border_style="red",
+            )
+        )
+        return False
+
+    train_texts, train_labels = splits["train"]
+    val_texts, val_labels = splits["val"]
+
+    est = estimate_phishing_time(len(train_texts), len(val_texts), config, device)
+    print_estimate("Phishing (Warhammer)", len(train_texts), len(val_texts), est)
+
+    if estimate_only:
+        return True
+
+    console.print(f"\n[bold]Starting phishing training[/bold]  device=[cyan]{device}[/cyan]")
+    t0 = time.perf_counter()
+
+    trainer = PhishingTrainer(config, device=device)
+
+    if resume and (resume / "warhammer.pt").exists() and trainer.detector.warhammer is not None:
+        console.print(f"  [cyan]Resuming Warhammer from checkpoint:[/cyan] {resume}")
+        trainer.detector.warhammer.load_state_dict(
+            torch.load(resume / "warhammer.pt", map_location=trainer.detector.device)
+        )
+
+    def on_event(event: dict) -> None:
+        if not verbose:
+            return
+        if event["type"] == "epoch":
+            console.print(
+                f"  [dim][warhammer/{event['stage']}] epoch {event['epoch']}/{event['epochs']} "
+                f"loss={event['loss']:.4f} val_acc={event['val_acc']:.4f}[/dim]"
+            )
+        elif event["type"] in ("attack", "beast", "pipeline"):
+            console.print(f"  [dim]{event['type']} val_acc={event['val_acc']:.4f}[/dim]")
+
+    trainer.callback = on_event
+    with console.status("[red]Training Attack → Beast → Warhammer…"):
+        trainer.fit(train_texts, train_labels, val_texts, val_labels)
+
+    out_dir = checkpoint_dir / "phishing"
+    trainer.detector.save(out_dir)
+    elapsed = time.perf_counter() - t0
+
+    console.print(
+        f"\n[bold green]✓  Phishing training complete[/bold green]  "
         f"saved → [cyan]{out_dir}[/cyan]  "
         f"wall-time: [bold]{_fmt_duration(elapsed)}[/bold]"
     )
@@ -490,6 +653,7 @@ def train_all_parallel(
     runs_dir: Path = Path("runs"),
     cart_overrides: Optional[dict] = None,
     jaw_overrides: Optional[dict] = None,
+    demo: bool = False,
 ) -> None:
     """
     Launch CART and JAW training in parallel subprocesses.
@@ -506,6 +670,7 @@ def train_all_parallel(
         verbose=verbose,
         runs_dir=runs_dir,
         run_id=new_run_id(),
+        demo=demo,
     )
     cart_args = {**shared, "resume": resume_cart, "config_overrides": cart_overrides or {}}
     jaw_args  = {**shared, "resume": resume_jaw, "config_overrides": jaw_overrides or {}}
@@ -558,6 +723,7 @@ def run_dashboard_cli(args: argparse.Namespace, device: str, cart_overrides: dic
     specs, notes = build_specs(
         models, args.data_dir, args.checkpoint_dir,
         {"cart": cart_overrides, "jaw": jaw_overrides}, sweeps, run_id, console,
+        allow_demo=getattr(args, "demo", False),
     )
     for note in notes:
         console.print(f"  [yellow]⚠[/yellow]  {note}")
@@ -603,10 +769,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "positional_model",
+        nargs="?",
+        choices=["cart", "jaw", "phishing", "all"],
+        default=None,
+        help="Optional positional model name: cart, jaw, phishing, or all (e.g. `python train.py cart`)",
+    )
+    parser.add_argument(
         "--model",
-        choices=["cart", "jaw", "all"],
+        choices=["cart", "jaw", "phishing", "all"],
         default="all",
-        help="Which model to train (default: all)",
+        help="Which model to train (default: all = CART + JAW)",
     )
     parser.add_argument(
         "--data-dir",
@@ -711,6 +884,21 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("runs"),
         help="Where run records and logs are stored (default: runs/)",
     )
+
+    data_grp = parser.add_argument_group("data convenience")
+    data_grp.add_argument(
+        "--demo",
+        action="store_true",
+        help="Run training in demo mode using generated sample data if dataset is missing",
+    )
+    data_grp.add_argument(
+        "--prepare-data",
+        choices=["cart", "jaw", "phishing", "all"],
+        nargs="?",
+        const="all",
+        default=None,
+        help="Generate ready-to-train sample datasets under --data-dir and exit",
+    )
     return parser
 
 
@@ -720,9 +908,28 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
+    # Allow positional model syntax: e.g. `python train.py cart` or `./train.sh jaw`
+    if args.positional_model is not None:
+        args.model = args.positional_model
+
     if args.history:
         from training.dashboard import show_history
         show_history(args.runs_dir, None if args.model == "all" else args.model, args.history_limit, console)
+        return
+
+    if args.prepare_data:
+        from util.manager import SafeStepDataManager
+        created = SafeStepDataManager.prepare_sample_data(args.prepare_data, args.data_dir)
+        console.print(
+            Panel(
+                f"[bold green]✓  Sample datasets prepared in [cyan]{args.data_dir}[/cyan][/bold green]\n\n" +
+                "\n".join(f"  • [bold]{k.upper()}:[/bold] {v}" for k, v in created.items()) +
+                f"\n\n[bold]Next step:[/bold] Run training with:\n" +
+                f"  [cyan]python -m train --model {args.prepare_data} --data-dir {args.data_dir}[/cyan]",
+                title="Data Preparation Complete",
+                border_style="green",
+            )
+        )
         return
 
     # ── Banner ──────────────────────────────────────────────────────────────────
@@ -742,22 +949,29 @@ def main() -> None:
     # ── Config overrides ─────────────────────────────────────────────────────────
     cart_overrides: dict = {}
     jaw_overrides:  dict = {}
+    phishing_overrides: dict = {}
 
     if args.epochs_frozen is not None:
         cart_overrides["num_epochs_frozen"] = args.epochs_frozen
         jaw_overrides["num_epochs_frozen"]  = args.epochs_frozen
+        phishing_overrides["num_epochs_frozen"] = args.epochs_frozen
     if args.epochs_finetune is not None:
         cart_overrides["num_epochs_finetune"] = args.epochs_finetune
         jaw_overrides["num_epochs_finetune"]  = args.epochs_finetune
+        phishing_overrides["num_epochs_finetune"] = args.epochs_finetune
     if args.batch_size is not None:
         cart_overrides["train_batch_size"] = args.batch_size
         jaw_overrides["train_batch_size"]  = args.batch_size
+        phishing_overrides["train_batch_size"] = args.batch_size
     if args.lr is not None:
         cart_overrides["learning_rate"] = args.lr
         jaw_overrides["lr_finetune"]    = args.lr
+        phishing_overrides["learning_rate"] = args.lr
 
     # ── Dispatch ─────────────────────────────────────────────────────────────────
-    if args.dashboard or args.sweep:
+    if args.model == "phishing" and (args.dashboard or args.sweep):
+        console.print("[bold yellow]⚠  --dashboard/--sweep don't support phishing yet; training without them.[/bold yellow]")
+    elif args.dashboard or args.sweep:
         run_dashboard_cli(args, device, cart_overrides, jaw_overrides)
         return
 
@@ -772,6 +986,7 @@ def main() -> None:
             verbose=args.verbose,
             config_overrides=cart_overrides,
             runs_dir=args.runs_dir,
+            demo=args.demo,
         )
 
     elif args.model == "jaw":
@@ -785,6 +1000,21 @@ def main() -> None:
             verbose=args.verbose,
             config_overrides=jaw_overrides,
             runs_dir=args.runs_dir,
+            demo=args.demo,
+        )
+
+    elif args.model == "phishing":
+        train_phishing(
+            data_dir=args.data_dir,
+            checkpoint_dir=args.checkpoint_dir,
+            device=device,
+            workers=args.workers,
+            estimate_only=args.estimate_only,
+            resume=args.resume,
+            verbose=args.verbose,
+            config_overrides=phishing_overrides,
+            runs_dir=args.runs_dir,
+            demo=args.demo,
         )
 
     else:  # "all"
@@ -802,6 +1032,7 @@ def main() -> None:
             runs_dir=args.runs_dir,
             cart_overrides=cart_overrides,
             jaw_overrides=jaw_overrides,
+            demo=args.demo,
         )
 
     if args.estimate_only:
