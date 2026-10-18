@@ -173,7 +173,7 @@ def test_parse_sweeps():
 
 def test_build_specs_expands_grid(tmp_path: Path):
     sweeps = parse_sweeps(["lr=1e-5,3e-5", "batch_size=8,16"])
-    specs, notes = build_specs(["cart"], tmp_path, tmp_path / "ckpt", {"cart": {}}, sweeps, "run", Console(quiet=True))
+    specs, notes = build_specs(["cart"], tmp_path, tmp_path / "ckpt", {"cart": {}}, sweeps, "run", Console(quiet=True), allow_demo=True)
     assert len(specs) == 4
     assert {s.config.learning_rate for s in specs} == {1e-5, 3e-5}
     assert {s.config.train_batch_size for s in specs} == {8, 16}

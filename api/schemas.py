@@ -102,6 +102,53 @@ class BatchImageDetectionResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Phishing Detection Schemas (Attack -> Beast -> Warhammer)
+# ---------------------------------------------------------------------------
+
+class PhishingDetectionRequest(BaseModel):
+    """Input payload for a single phishing detection query."""
+    text: str = Field(..., min_length=1, description="Email body, URL, or page text")
+    threshold: Optional[float] = Field(None, ge=0.0, le=1.0, description="Optional override for decision threshold")
+    max_stage: str = Field("warhammer", pattern="^(attack|beast|warhammer)$", description="Stop escalating after this stage")
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "text": "Your account is locked. Verify now at http://secure-login.example.ru/verify",
+                "threshold": 0.5,
+                "max_stage": "warhammer",
+            }
+        }
+    )
+
+
+class BatchPhishingDetectionRequest(BaseModel):
+    """Input payload for batch phishing detection."""
+    texts: List[str] = Field(..., min_length=1, description="List of emails / URLs / page texts")
+    threshold: Optional[float] = Field(None, ge=0.0, le=1.0, description="Optional override for decision threshold")
+    max_stage: str = Field("warhammer", pattern="^(attack|beast|warhammer)$", description="Stop escalating after this stage")
+
+
+class PhishingDetectionResult(BaseModel):
+    """Inference output for a single phishing query."""
+    text: str
+    p_legitimate: float = Field(..., description="Estimated probability the message is legitimate")
+    p_phishing: float = Field(..., description="Estimated probability the message is phishing")
+    label: str = Field(..., description="'legitimate' or 'phishing'")
+    stage: str = Field(..., description="Stage that made the call: 'attack', 'beast', 'warhammer', or 'none' (mock)")
+    decision_threshold: float = Field(..., description="Threshold applied to p_phishing")
+    model: str = "Phishing"
+    is_mock: bool = Field(False, description="True if no trained checkpoint is loaded (neutral 0.5 result)")
+
+
+class BatchPhishingDetectionResponse(BaseModel):
+    """Response containing batch phishing predictions."""
+    results: List[PhishingDetectionResult]
+    count: int
+    latency_ms: float
+
+
+# ---------------------------------------------------------------------------
 # Unified Multimodal Detection Schemas
 # ---------------------------------------------------------------------------
 
@@ -109,6 +156,7 @@ class UnifiedDetectionResponse(BaseModel):
     """Combined multimodal analysis for text and image artifacts."""
     text_result: Optional[TextDetectionResult] = None
     image_result: Optional[ImageDetectionResult] = None
+    phishing_result: Optional[PhishingDetectionResult] = None
     overall_risk: str = Field(..., description="'HIGH', 'MEDIUM', 'LOW', or 'UNKNOWN'")
     risk_score: float = Field(..., ge=0.0, le=1.0, description="Composite synthetic content risk score")
     summary: str = Field(..., description="Human-readable assessment summary")

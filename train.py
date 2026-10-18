@@ -352,6 +352,34 @@ def _fit_with_progress(
 
 # ── CART training entry-point ────────────────────────────────────────────────────
 
+CART_RESUME_FILES = ("neural_model.pt", "fusion_model.json")
+JAW_RESUME_FILES = ("jaw_model.pt",)
+PHISHING_RESUME_FILES = ("warhammer.pt",)
+
+
+def _check_resume(resume: Optional[Path], required: tuple, model_name: str) -> bool:
+    """Return True if no resume requested or all required checkpoint files exist."""
+    if not resume:
+        return True
+    resume = Path(resume)
+    missing = [f for f in required if not (resume / f).is_file()]
+    if resume.is_dir() and not missing:
+        return True
+    reason = "directory does not exist" if not resume.is_dir() else "missing: " + ", ".join(missing)
+    expected = "\n".join(f"  • [cyan]{resume / f}[/cyan]" for f in required)
+    console.print(
+        Panel(
+            f"[bold red]✗  Cannot resume {model_name}: {reason}[/bold red]\n\n"
+            f"Resume dir: [dim]{resume}[/dim]\n\n"
+            f"[bold]Expected files:[/bold]\n{expected}\n\n"
+            "Fix the --resume path or omit it to train from scratch.",
+            title=f"{model_name} Training - Resume Checkpoint Missing",
+            border_style="red",
+        )
+    )
+    return False
+
+
 def train_cart(
     data_dir: Path,
     checkpoint_dir: Path,
@@ -367,6 +395,8 @@ def train_cart(
 ) -> bool:
     """Run the full CART training pipeline. Returns True on success."""
     console.print(Rule("[bold blue]CART — AI-Text Detector[/bold blue]"))
+    if not _check_resume(resume, CART_RESUME_FILES, "CART"):
+        return False
 
     config = CARTConfig(**config_overrides) if config_overrides else CARTConfig()
 
@@ -407,7 +437,7 @@ def train_cart(
     trainer = CARTTrainer(config, device=device)
 
     # Optionally resume
-    if resume and (resume / "neural_model.pt").exists():
+    if resume:
         console.print(f"  [cyan]Resuming from checkpoint:[/cyan] {resume}")
         trainer.detector.load(resume)
 
@@ -447,6 +477,8 @@ def train_jaw(
 ) -> bool:
     """Run the full JAW training pipeline. Returns True on success."""
     console.print(Rule("[bold magenta]JAW — AI-Image Detector[/bold magenta]"))
+    if not _check_resume(resume, JAW_RESUME_FILES, "JAW"):
+        return False
 
     config = JAWConfig(**config_overrides) if config_overrides else JAWConfig()
 
@@ -487,7 +519,7 @@ def train_jaw(
 
     trainer = JAWTrainer(config, device=device)
 
-    if resume and (resume / "jaw_model.pt").exists():
+    if resume:
         console.print(f"  [cyan]Resuming from checkpoint:[/cyan] {resume}")
         trainer.detector.load(resume)
 
@@ -567,6 +599,8 @@ def train_phishing(
 ) -> bool:
     """Run Attack -> Beast -> Warhammer training. Returns True on success."""
     console.print(Rule("[bold red]Phishing — Attack / Beast / Warhammer[/bold red]"))
+    if not _check_resume(resume, PHISHING_RESUME_FILES, "Phishing"):
+        return False
 
     config = PhishingConfig(**config_overrides) if config_overrides else PhishingConfig()
 
@@ -604,7 +638,7 @@ def train_phishing(
 
     trainer = PhishingTrainer(config, device=device)
 
-    if resume and (resume / "warhammer.pt").exists() and trainer.detector.warhammer is not None:
+    if resume and trainer.detector.warhammer is not None:
         console.print(f"  [cyan]Resuming Warhammer from checkpoint:[/cyan] {resume}")
         trainer.detector.warhammer.load_state_dict(
             torch.load(resume / "warhammer.pt", map_location=trainer.detector.device, weights_only=True)
@@ -670,7 +704,7 @@ def train_all_parallel(
     cart_overrides: Optional[dict] = None,
     jaw_overrides: Optional[dict] = None,
     demo: bool = False,
-) -> None:
+) -> bool:
     """
     Launch CART and JAW training in parallel subprocesses.
 
@@ -691,6 +725,13 @@ def train_all_parallel(
     cart_args = {**shared, "resume": resume_cart, "config_overrides": cart_overrides or {}}
     jaw_args  = {**shared, "resume": resume_jaw, "config_overrides": jaw_overrides or {}}
 
+    # Fail fast on bad resume paths before spawning any training.
+    resume_ok = _check_resume(resume_cart, CART_RESUME_FILES, "CART")
+    resume_ok = _check_resume(resume_jaw, JAW_RESUME_FILES, "JAW") and resume_ok
+    if not resume_ok:
+        return False
+
+    results: list[bool] = []
     if device == "cpu" and not estimate_only:
         console.print(
             "\n[bold yellow]Parallel mode:[/bold yellow] "
@@ -704,6 +745,7 @@ def train_all_parallel(
             for fut in as_completed(futures):
                 model_name = futures[fut]
                 _, ok = fut.result()
+                results.append(bool(ok))
                 status = "[green]✓ success[/green]" if ok else "[red]✗ failed[/red]"
                 console.print(f"  {model_name}: {status}")
     else:
@@ -713,8 +755,9 @@ def train_all_parallel(
                 f"\n[dim]Sequential mode on {device.upper()} "
                 "(parallel GPU training requires multiple GPUs).[/dim]\n"
             )
-        train_cart(**cart_args)
-        train_jaw(**jaw_args)
+        results.append(bool(train_cart(**cart_args)))
+        results.append(bool(train_jaw(**jaw_args)))
+    return all(results)
 
 
 # ── Dashboard mode ───────────────────────────────────────────────────────────────
@@ -991,8 +1034,9 @@ def main() -> None:
         run_dashboard_cli(args, device, cart_overrides, jaw_overrides)
         return
 
+    ok = True
     if args.model == "cart":
-        train_cart(
+        ok = train_cart(
             data_dir=args.data_dir,
             checkpoint_dir=args.checkpoint_dir,
             device=device,
@@ -1006,7 +1050,7 @@ def main() -> None:
         )
 
     elif args.model == "jaw":
-        train_jaw(
+        ok = train_jaw(
             data_dir=args.data_dir,
             checkpoint_dir=args.checkpoint_dir,
             device=device,
@@ -1020,7 +1064,7 @@ def main() -> None:
         )
 
     elif args.model == "phishing":
-        train_phishing(
+        ok = train_phishing(
             data_dir=args.data_dir,
             checkpoint_dir=args.checkpoint_dir,
             device=device,
@@ -1036,7 +1080,7 @@ def main() -> None:
     else:  # "all"
         resume_cart = args.resume / "cart" if args.resume else None
         resume_jaw  = args.resume / "jaw"  if args.resume else None
-        train_all_parallel(
+        ok = train_all_parallel(
             data_dir=args.data_dir,
             checkpoint_dir=args.checkpoint_dir,
             device=device,
@@ -1053,6 +1097,9 @@ def main() -> None:
 
     if args.estimate_only:
         console.print("\n[dim]--estimate-only flag set; no training was performed.[/dim]")
+
+    if ok is False:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -25,10 +25,12 @@ class APIConfig:
     # Default checkpoint search directories
     cart_checkpoint_dir: Optional[Path] = None
     jaw_checkpoint_dir: Optional[Path] = None
+    phishing_checkpoint_dir: Optional[Path] = None
 
     # Threshold overrides (None means use model config defaults, typically 0.5)
     cart_decision_threshold: Optional[float] = None
     jaw_decision_threshold: Optional[float] = None
+    phishing_decision_threshold: Optional[float] = None
 
     # Execution behavior
     lazy_load: bool = True
@@ -63,6 +65,12 @@ class APIConfig:
             default_path = Path("checkpoints/jaw")
             self.jaw_checkpoint_dir = default_path
 
+        phishing_env = os.getenv("SAFESTEP_PHISHING_CHECKPOINT")
+        if phishing_env:
+            self.phishing_checkpoint_dir = Path(phishing_env)
+        elif self.phishing_checkpoint_dir is None:
+            self.phishing_checkpoint_dir = Path("checkpoints/phishing")
+
         cors_env = os.getenv("SAFESTEP_CORS_ORIGINS")
         if cors_env is not None:
             self.cors_origins = [o.strip() for o in cors_env.split(",") if o.strip()]
@@ -76,6 +84,8 @@ class APIConfig:
             self.cart_decision_threshold = float(os.environ["SAFESTEP_CART_THRESHOLD"])
         if os.getenv("SAFESTEP_JAW_THRESHOLD"):
             self.jaw_decision_threshold = float(os.environ["SAFESTEP_JAW_THRESHOLD"])
+        if os.getenv("SAFESTEP_PHISHING_THRESHOLD"):
+            self.phishing_decision_threshold = float(os.environ["SAFESTEP_PHISHING_THRESHOLD"])
 
 
 default_api_config = APIConfig()

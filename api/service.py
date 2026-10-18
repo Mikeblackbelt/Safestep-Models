@@ -18,6 +18,7 @@ import torch.nn.functional as F
 from api.model_registry import SafeStepModelRegistry, registry
 from api.schemas import (
     ImageDetectionResult,
+    PhishingDetectionResult,
     TextDetectionResult,
     UnifiedDetectionResponse,
 )
@@ -257,6 +258,56 @@ class SafeStepService:
         return results[0] if is_single else results
 
     # -----------------------------------------------------------------------
+    # Phishing Detection (Attack -> Beast -> Warhammer)
+    # -----------------------------------------------------------------------
+
+    def predict_phishing(
+        self,
+        texts: Union[str, List[str]],
+        threshold: Optional[float] = None,
+        max_stage: str = "warhammer",
+    ) -> Union[PhishingDetectionResult, List[PhishingDetectionResult]]:
+        """
+        Run the phishing escalation pipeline on a single text or batch.
+
+        Without a trained checkpoint (and mock fallback enabled) Attack/Beast are
+        unfit, so every item gets a neutral p_phishing=0.5, label 'legitimate',
+        stage 'none' and is_mock=True.
+        """
+        is_single = isinstance(texts, str)
+        text_list = [texts] if is_single else list(texts)
+
+        if not text_list:
+            return [] if not is_single else None
+
+        detector = self.registry.get_phishing_detector()
+        effective_threshold = (
+            threshold if threshold is not None else detector.config.decision_threshold
+        )
+
+        results: List[PhishingDetectionResult] = []
+        if not self.registry._phishing_weights_loaded:
+            for txt in text_list:
+                results.append(PhishingDetectionResult(
+                    text=txt, p_legitimate=0.5, p_phishing=0.5, label="legitimate",
+                    stage="none", decision_threshold=effective_threshold, is_mock=True,
+                ))
+        else:
+            for raw in detector.predict(text_list, max_stage=max_stage):
+                p = float(raw["p_phishing"])
+                results.append(PhishingDetectionResult(
+                    text=raw["text"],
+                    p_legitimate=round(1.0 - p, 4),
+                    p_phishing=round(p, 4),
+                    label="phishing" if p >= effective_threshold else "legitimate",
+                    stage=str(raw["stage"]),
+                    decision_threshold=effective_threshold,
+                    is_mock=False,
+                ))
+
+        return results[0] if is_single else results
+
+    # -----------------------------------------------------------------------
     # Unified Multimodal Detection
     # -----------------------------------------------------------------------
 
@@ -266,17 +317,27 @@ class SafeStepService:
         image: Optional[Union[str, Path, bytes, Image.Image]] = None,
         text_threshold: Optional[float] = None,
         image_threshold: Optional[float] = None,
+        phishing_threshold: Optional[float] = None,
+        include_phishing: bool = True,
     ) -> UnifiedDetectionResponse:
         """
         Analyze both text and image simultaneously and provide an aggregated risk rating.
+        When text is given the phishing pipeline also runs; its p_phishing counts towards
+        the risk score only with real weights (mock results are reported but ignored).
         """
         start_time = time.perf_counter()
 
         text_res: Optional[TextDetectionResult] = None
         image_res: Optional[ImageDetectionResult] = None
+        phishing_res: Optional[PhishingDetectionResult] = None
 
         if text and text.strip():
             text_res = self.predict_text(text, threshold=text_threshold)
+            if include_phishing:
+                try:
+                    phishing_res = self.predict_phishing(text, threshold=phishing_threshold)
+                except Exception as e:
+                    logger.warning(f"Phishing analysis skipped in unified endpoint: {e}")
 
         if image is not None:
             image_res = self.predict_image(image, threshold=image_threshold)
@@ -296,6 +357,12 @@ class SafeStepService:
             scores.append(image_res.p_ai)
             summaries.append(f"Image: {image_res.label} ({image_res.p_ai * 100:.1f}% AI)")
 
+        if phishing_res is not None and not phishing_res.is_mock:
+            scores.append(phishing_res.p_phishing)
+            summaries.append(
+                f"Phishing: {phishing_res.label} ({phishing_res.p_phishing * 100:.1f}%, {phishing_res.stage})"
+            )
+
         risk_score = round(float(max(scores)), 4)
 
         if risk_score >= 0.70:
@@ -311,6 +378,7 @@ class SafeStepService:
         return UnifiedDetectionResponse(
             text_result=text_res,
             image_result=image_res,
+            phishing_result=phishing_res,
             overall_risk=overall_risk,
             risk_score=risk_score,
             summary=summary,

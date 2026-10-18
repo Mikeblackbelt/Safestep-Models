@@ -114,3 +114,17 @@ def test_safestep_data_manager_prepare_sample_data(tmp_path: Path):
     cart_tr_x, cart_tr_y, cart_va_x, cart_va_y = load_splits("cart", tmp_path / "data" / "cart")
     assert len(cart_tr_x) > 0
     assert len(cart_va_x) > 0
+
+
+def test_load_text_split_no_data_without_demo_returns_empty(tmp_path):
+    for split in ("train", "val"):
+        texts, labels = load_text_split(tmp_path, split)
+        assert texts == [] and labels == []
+        texts, labels = load_text_split(tmp_path / "missing", split, allow_demo=False)
+        assert texts == [] and labels == []
+
+
+def test_load_text_split_no_data_with_demo_uses_placeholders(tmp_path):
+    texts, labels = load_text_split(tmp_path, "train", allow_demo=True)
+    assert len(texts) == len(labels) > 0
+    assert set(labels) <= {"human", "ai_generated"}

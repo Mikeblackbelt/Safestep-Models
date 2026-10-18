@@ -29,6 +29,15 @@ def main():
     text_parser.add_argument("--threshold", type=float, default=None, help="Custom decision threshold (0.0 to 1.0)")
     text_parser.add_argument("--features", action="store_true", help="Include extracted stylistic heuristic features")
 
+    # Command: predict-phishing
+    phish_parser = subparsers.add_parser("predict-phishing", help="Run the phishing escalation pipeline directly")
+    phish_parser.add_argument("text", help="Email body, URL, or page text to evaluate")
+    phish_parser.add_argument("--threshold", type=float, default=None, help="Custom decision threshold (0.0 to 1.0)")
+    phish_parser.add_argument(
+        "--max-stage", default="warhammer", choices=["attack", "beast", "warhammer"],
+        help="Stop escalating after this stage",
+    )
+
     # Command: predict-image
     img_parser = subparsers.add_parser("predict-image", help="Run JAW image detection directly")
     img_parser.add_argument("image_path", help="Path to image file")
@@ -54,6 +63,10 @@ def main():
 
     elif args.command == "predict-text":
         res = service.predict_text(args.text, threshold=args.threshold, include_features=args.features)
+        print(json.dumps(res.model_dump(), indent=2))
+
+    elif args.command == "predict-phishing":
+        res = service.predict_phishing(args.text, threshold=args.threshold, max_stage=args.max_stage)
         print(json.dumps(res.model_dump(), indent=2))
 
     elif args.command == "predict-image":

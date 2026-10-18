@@ -19,6 +19,8 @@ from cart.config import CARTConfig
 from cart.detector import CARTDetector
 from jaw.config import JAWConfig
 from jaw.detector import JAWDetector
+from phishing.config import PhishingConfig
+from phishing.detector import PhishingDetector
 
 logger = logging.getLogger("safestep.api.registry")
 
@@ -37,12 +39,15 @@ class SafeStepModelRegistry:
         # Model instances
         self._cart_detector: Optional[CARTDetector] = None
         self._jaw_detector: Optional[JAWDetector] = None
+        self._phishing_detector: Optional[PhishingDetector] = None
 
         # Checkpoint statuses
         self._cart_weights_loaded = False
         self._jaw_weights_loaded = False
         self._cart_checkpoint_path: Optional[Path] = None
         self._jaw_checkpoint_path: Optional[Path] = None
+        self._phishing_weights_loaded = False
+        self._phishing_checkpoint_path: Optional[Path] = None
 
         # Device determination
         self._device = self._resolve_device(self.config.device)
@@ -186,6 +191,62 @@ class SafeStepModelRegistry:
             return self._jaw_weights_loaded
 
     # -----------------------------------------------------------------------
+    # Phishing Detector Management (Attack -> Beast -> Warhammer)
+    # -----------------------------------------------------------------------
+
+    def get_phishing_detector(self) -> PhishingDetector:
+        """Return the phishing detector (lazy loaded).
+
+        Attack/Beast are unfit until a checkpoint is loaded; in mock-fallback mode
+        the service layer returns neutral is_mock results instead of calling them.
+        """
+        with self._lock:
+            if self._phishing_detector is None:
+                self._load_phishing(self.config.phishing_checkpoint_dir)
+            self._require_weights(
+                "phishing", self._phishing_weights_loaded, self._phishing_checkpoint_path
+            )
+            return self._phishing_detector
+
+    def _load_phishing(self, checkpoint_dir: Optional[Union[str, Path]]) -> None:
+        """Initialize the phishing pipeline; Warhammer is built only if warhammer.pt exists."""
+        ckpt = Path(checkpoint_dir) if checkpoint_dir is not None else None
+        has_warhammer = ckpt is not None and (ckpt / "warhammer.pt").exists()
+
+        phishing_config = PhishingConfig(use_warhammer=has_warhammer)
+        if self.config.phishing_decision_threshold is not None:
+            phishing_config.decision_threshold = self.config.phishing_decision_threshold
+
+        logger.info(f"Initializing PhishingDetector (warhammer={has_warhammer}) on {self._device}...")
+        detector = PhishingDetector(phishing_config, device=self._device)
+
+        weights_loaded = False
+        if ckpt is not None:
+            if (ckpt / "attack.joblib").exists() and (ckpt / "beast.json").exists():
+                try:
+                    detector.load(ckpt)
+                    weights_loaded = True
+                    logger.info("Phishing weights loaded successfully.")
+                except Exception as e:
+                    logger.error(f"Failed to load phishing weights from {ckpt}: {e}")
+            else:
+                logger.info(
+                    f"No complete phishing checkpoint at {ckpt} "
+                    "(needs attack.joblib and beast.json)."
+                )
+
+        self._phishing_detector = detector
+        self._phishing_weights_loaded = weights_loaded
+        self._phishing_checkpoint_path = ckpt
+
+    def reload_phishing(self, checkpoint_dir: Optional[Union[str, Path]] = None) -> bool:
+        """Force reload of the phishing pipeline from a given or default directory."""
+        with self._lock:
+            path = checkpoint_dir or self.config.phishing_checkpoint_dir
+            self._load_phishing(path)
+            return self._phishing_weights_loaded
+
+    # -----------------------------------------------------------------------
     # Model Status and Inspection
     # -----------------------------------------------------------------------
 
@@ -231,7 +292,30 @@ class SafeStepModelRegistry:
             },
         )
 
-        return [cart_status, jaw_status]
+        ph = self._phishing_detector
+        phishing_status = ModelStatus(
+            model_id="phishing",
+            name="Phishing (Attack -> Beast -> Warhammer escalation pipeline)",
+            type="text_detector",
+            is_loaded=ph is not None,
+            weights_found=self._phishing_weights_loaded,
+            checkpoint_path=str(self._phishing_checkpoint_path) if self._phishing_checkpoint_path else None,
+            device=self._device,
+            decision_threshold=(
+                ph.config.decision_threshold
+                if ph
+                else (self.config.phishing_decision_threshold or 0.5)
+            ),
+            details={
+                "stages": ["attack", "beast", "warhammer"],
+                "attack": "char n-gram TF-IDF + logistic regression",
+                "beast": "xgboost over attack score + indicators",
+                "warhammer": "distilbert (only if warhammer.pt present)",
+                "warhammer_ready": bool(ph.warhammer_ready) if ph else False,
+            },
+        )
+
+        return [cart_status, jaw_status, phishing_status]
 
 
 # Global singleton instance

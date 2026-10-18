@@ -2,7 +2,7 @@
 # ==============================================================================
 # SafeStep Model Training Terminal Helper
 # ==============================================================================
-# Fast, easy terminal training command for SafeStep models (CART, JAW, or ALL).
+# Fast, easy terminal training command for SafeStep models (CART, JAW, PHISHING, or ALL).
 # Auto-detects virtual environment, verifies dependencies, and supports both
 # interactive and direct CLI workflows.
 # ==============================================================================
@@ -29,6 +29,12 @@ elif [ -x "$SCRIPT_DIR/.venv/bin/python" ]; then
     PY_BIN="$SCRIPT_DIR/.venv/bin/python"
 elif [ -x "$SCRIPT_DIR/venv/bin/python" ]; then
     PY_BIN="$SCRIPT_DIR/venv/bin/python"
+elif [ -n "$VIRTUAL_ENV" ] && [ -x "$VIRTUAL_ENV/Scripts/python.exe" ]; then
+    PY_BIN="$VIRTUAL_ENV/Scripts/python.exe"
+elif [ -x "$SCRIPT_DIR/.venv/Scripts/python.exe" ]; then
+    PY_BIN="$SCRIPT_DIR/.venv/Scripts/python.exe"
+elif [ -x "$SCRIPT_DIR/venv/Scripts/python.exe" ]; then
+    PY_BIN="$SCRIPT_DIR/venv/Scripts/python.exe"
 elif command -v python3 &>/dev/null; then
     PY_BIN="python3"
 elif command -v python &>/dev/null; then
@@ -44,15 +50,19 @@ print_help() {
     echo -e "${BOLD}Quick Model Commands:${NC}"
     echo -e "  ${GREEN}./train.sh cart${NC}                 Train CART (AI-text detector)"
     echo -e "  ${GREEN}./train.sh jaw${NC}                  Train JAW (AI-image detector)"
-    echo -e "  ${GREEN}./train.sh all${NC}                  Train both models concurrently"
-    echo -e "  ${GREEN}./train.sh demo [cart|jaw|all]${NC}  Run instant training on demo data"
+    echo -e "  ${GREEN}./train.sh phishing${NC}             Train PHISHING (phishing detector)"
+    echo -e "  ${GREEN}./train.sh all${NC}                  Train all models concurrently"
+    echo -e "  ${GREEN}./train.sh demo [cart|jaw|phishing|all]${NC}
+                                  Run instant training on demo data"
     echo ""
     echo -e "${BOLD}Utility & Monitoring Commands:${NC}"
-    echo -e "  ${CYAN}./train.sh prepare [data-dir]${NC}   Generate ready-to-train sample datasets"
+    echo -e "  ${CYAN}./train.sh prepare [model] [data-dir]${NC}
+                                  Generate sample datasets (model: cart|jaw|phishing|all)"
     echo -e "  ${CYAN}./train.sh inspect [dir]${NC}        Inspect a folder and report image/text counts"
     echo -e "  ${CYAN}./train.sh cifake <dir>${NC}         Import downloaded CIFAKE folder into data/jaw"
     echo -e "  ${CYAN}./train.sh dashboard${NC}            Train with full-screen live dashboard & metrics"
-    echo -e "  ${CYAN}./train.sh estimate [cart|jaw]${NC}  Preview training time & hardware plan without training"
+    echo -e "  ${CYAN}./train.sh estimate [cart|jaw|phishing|all]${NC}
+                                  Preview training time & hardware plan without training"
     echo -e "  ${CYAN}./train.sh history${NC}              Show history, charts, and metrics of past runs"
     echo -e "  ${CYAN}./train.sh interactive${NC}          Interactive step-by-step menu wizard"
     echo ""
@@ -71,13 +81,14 @@ interactive_mode() {
     echo -e "  ${BOLD}1)${NC} Train CART (AI-generated text detector)"
     echo -e "  ${BOLD}2)${NC} Train JAW (AI-generated image detector)"
     echo -e "  ${BOLD}3)${NC} Train Both (CART & JAW) in parallel"
+    echo -e "  ${BOLD}8)${NC} Train PHISHING (phishing email/URL detector)"
     echo -e "  ${BOLD}4)${NC} Quick Demo training (test pipeline on synthetic data)"
     echo -e "  ${BOLD}5)${NC} Prepare sample training datasets in data/"
     echo -e "  ${BOLD}6)${NC} Estimate training time only"
     echo -e "  ${BOLD}7)${NC} View past training history and metrics"
     echo -e "  ${BOLD}q)${NC} Quit"
     echo ""
-    read -rp "Enter choice [1-7/q]: " choice
+    read -rp "Enter choice [1-8/q]: " choice
 
     case "$choice" in
         1)
@@ -93,7 +104,7 @@ interactive_mode() {
             exec "$PY_BIN" train.py --model all --dashboard
             ;;
         4)
-            read -rp "Which model for demo? (cart/jaw/all) [all]: " demo_model
+            read -rp "Which model for demo? (cart/jaw/phishing/all) [all]: " demo_model
             demo_model="${demo_model:-all}"
             echo -e "\n${GREEN}Running demo training for ${demo_model}...${NC}"
             exec "$PY_BIN" train.py --model "$demo_model" --demo
@@ -103,12 +114,17 @@ interactive_mode() {
             exec "$PY_BIN" train.py --prepare-data all
             ;;
         6)
-            read -rp "Which model to estimate? (cart/jaw/all) [all]: " est_model
+            read -rp "Which model to estimate? (cart/jaw/phishing/all) [all]: " est_model
             est_model="${est_model:-all}"
             exec "$PY_BIN" train.py --model "$est_model" --estimate-only
             ;;
         7)
             exec "$PY_BIN" train.py --history
+            ;;
+        8)
+            echo -e "
+${GREEN}Starting PHISHING training...${NC}"
+            exec "$PY_BIN" train.py --model phishing
             ;;
         q|Q)
             echo "Cancelled."
@@ -145,12 +161,12 @@ case "$CMD" in
     interactive|wizard|menu)
         interactive_mode
         ;;
-    cart|jaw|all)
+    cart|jaw|phishing|all)
         exec "$PY_BIN" train.py --model "$CMD" "$@"
         ;;
     demo)
         TARGET_MODEL="all"
-        if [ $# -gt 0 ] && [[ "$1" =~ ^(cart|jaw|all)$ ]]; then
+        if [ $# -gt 0 ] && [[ "$1" =~ ^(cart|jaw|phishing|all)$ ]]; then
             TARGET_MODEL="$1"
             shift
         fi
@@ -158,10 +174,13 @@ case "$CMD" in
         ;;
     prepare|prep-data|sample)
         TARGET="all"
-        DATA_DIR="data"
         if [ $# -gt 0 ] && [[ "$1" =~ ^(cart|jaw|phishing|all)$ ]]; then
             TARGET="$1"
             shift
+        fi
+        # Bare path (not a flag) -> treat as --data-dir
+        if [ $# -gt 0 ] && [[ "$1" != -* ]]; then
+            set -- --data-dir "$1" "${@:2}"
         fi
         exec "$PY_BIN" train.py --prepare-data "$TARGET" "$@"
         ;;
@@ -183,7 +202,7 @@ case "$CMD" in
         ;;
     estimate|est)
         TARGET_MODEL="all"
-        if [ $# -gt 0 ] && [[ "$1" =~ ^(cart|jaw|all)$ ]]; then
+        if [ $# -gt 0 ] && [[ "$1" =~ ^(cart|jaw|phishing|all)$ ]]; then
             TARGET_MODEL="$1"
             shift
         fi

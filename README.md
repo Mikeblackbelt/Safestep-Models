@@ -48,10 +48,10 @@ python -m train --prepare-data all --data-dir data/
 
 ### Step 3: Run Training
 
-You can use the convenient `./train.sh` terminal wrapper or invoke `python train.py` directly:
+You can use the convenient `./train.sh` (Linux/macOS/WSL) or `.\train.ps1` (Windows PowerShell) wrapper, or invoke `python train.py` directly:
 
 ```bash
-# Easy Terminal Commands:
+# Easy Terminal Commands (Linux / macOS / WSL):
 ./train.sh cart                # Train CART (AI-text detector)
 ./train.sh jaw                 # Train JAW (AI-image detector)
 ./train.sh phishing            # Train Attack / Beast / Warhammer phishing pipeline
@@ -64,6 +64,20 @@ python train.py cart
 python train.py jaw
 python train.py all --dashboard
 ```
+
+```powershell
+# Windows PowerShell (same commands as train.sh):
+.\train.ps1 cart
+.\train.ps1 jaw
+.\train.ps1 phishing
+.\train.ps1 all
+.\train.ps1 demo
+.\train.ps1 interactive
+# If scripts are blocked by execution policy:
+powershell -ExecutionPolicy Bypass -File train.ps1 help
+```
+
+Without data, training stops with a "no data found" message; placeholder/synthetic data is only generated with `--demo`. `train.py` exits with status 1 if any requested model fails to train.
 
 ---
 
@@ -103,7 +117,7 @@ data/
 ├── train/
 │   ├── REAL/           # Auto-normalized to 'authentic'
 │   └── FAKE/           # Auto-normalized to 'ai_generated'
-└── val/            # train.py only reads train/ and val/; import a test/ split with util.manager --cifake
+└── test/           # used as validation when val/ is missing (also valid/, validation/)
     ├── REAL/
     └── FAKE/
 ```
@@ -313,6 +327,8 @@ python -m train --model cart --data-dir data/ --resume checkpoints/cart
 python -m train --model phishing --data-dir data/ --resume checkpoints/phishing
 ```
 
+A missing resume directory or checkpoint file (CART: `neural_model.pt` + `fusion_model.json`; JAW: `jaw_model.pt`; phishing: `warhammer.pt`) is an error, not a fresh start.
+
 ### 7. Phishing Pipeline Training (`--model phishing`)
 Training runs three stages, in order:
 
@@ -408,7 +424,7 @@ for r in trainer.detector.predict(["Verify your password at http://192.168.4.20/
 
 ## 🌐 Model Serving & Inference
 
-Once models are trained, start the FastAPI service (it serves CART and JAW; phishing isn't exposed over HTTP yet). Without checkpoints in `checkpoints/cart` and `checkpoints/jaw` the server still starts but runs untrained models. Check `weights_found` in `GET /models`. See [docs/deployment.md](docs/deployment.md) for env vars and Docker.
+Once models are trained, start the FastAPI service (it serves CART, JAW and the phishing pipeline). Without checkpoints in `checkpoints/cart`, `checkpoints/jaw` and `checkpoints/phishing` the server still starts but runs untrained/mock models (phishing returns a neutral `p_phishing=0.5`, `stage="none"`, `is_mock=true`), or returns `503` when `SAFESTEP_MOCK_FALLBACK=false`. Check `weights_found` in `GET /models`. See [docs/deployment.md](docs/deployment.md) for env vars and Docker.
 
 ```bash
 # Launch API server on port 8000
@@ -428,7 +444,23 @@ print(f"CART: {res_text.label} (p_ai: {res_text.p_ai:.3f})")
 # Detect AI image
 res_img = api.predict_image("tests/samples/sample_authentic.png")
 print(f"JAW: {res_img.label} (p_ai: {res_img.p_ai:.3f})")
+
+# Detect phishing (max_stage: attack | beast | warhammer)
+res_ph = api.predict_phishing("Urgent: verify your account at http://paypa1-login.xyz")
+print(f"Phishing: {res_ph.label} (p_phishing: {res_ph.p_phishing:.3f}, stage: {res_ph.stage})")
 ```
+
+### Phishing over HTTP
+```bash
+curl -X POST http://localhost:8000/api/v1/detect/phishing \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Urgent: verify your account at http://paypa1-login.xyz", "threshold": 0.5}'
+
+# Or from the CLI, without a server
+python -m api.cli predict-phishing "Urgent: verify your account at http://paypa1-login.xyz"
+```
+
+Batch requests go to `/api/v1/detect/phishing/batch` (`{"texts": [...]}`); `GET /models/phishing` and `POST /models/phishing/reload` work like the other models. `/api/v1/detect/unified` also returns `phishing_result` (toggle with `include_phishing`, tune with `phishing_threshold`). Configure with `SAFESTEP_PHISHING_CHECKPOINT` and `SAFESTEP_PHISHING_THRESHOLD`; see [docs/deployment.md](docs/deployment.md).
 
 ---
 

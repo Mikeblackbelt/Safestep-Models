@@ -1,6 +1,6 @@
 # Training
 
-All training goes through `train.py`. You can run it as `python train.py ...` or `python -m train ...`, which do the same thing. `train.sh` is a thin bash wrapper around it.
+All training goes through `train.py`. You can run it as `python train.py ...` or `python -m train ...`, which do the same thing. `train.sh` (bash) and `train.ps1` (Windows PowerShell) are thin wrappers around it.
 
 `train.py` loads `.env` from the repo root (via `python-dotenv`) on start-up.
 
@@ -57,29 +57,38 @@ For phishing, `--epochs-frozen`, `--epochs-finetune`, `--batch-size` and `--lr` 
 
 ## `train.sh` reference
 
-`train.sh` picks a Python interpreter in this order: `$VIRTUAL_ENV/bin/python`, `./.venv/bin/python`, `./venv/bin/python`, `python3`, `python`. On Windows, use `python train.py` directly or run the script from Git Bash/WSL.
+`train.sh` picks a Python interpreter in this order: `$VIRTUAL_ENV/bin/python`, `./.venv/bin/python`, `./venv/bin/python`, then the Windows-style `$VIRTUAL_ENV/Scripts/python.exe`, `./.venv/Scripts/python.exe`, `./venv/Scripts/python.exe`, then `python3`, `python`. On native Windows, use `train.ps1` (below).
 
 | Command | Runs |
 |---|---|
 | `./train.sh` (no args, interactive terminal) | Interactive menu wizard. Prints help when stdin isn't a TTY |
 | `./train.sh interactive` / `wizard` / `menu` | Interactive menu wizard |
-| `./train.sh cart\|jaw\|all [opts]` | `train.py --model <m> [opts]` |
-| `./train.sh phishing [opts]` | Passes through to `train.py phishing [opts]` |
-| `./train.sh demo [cart\|jaw\|all] [opts]` | `train.py --model <m> --demo` (default `all`) |
-| `./train.sh prepare\|prep-data\|sample [cart\|jaw\|phishing\|all] [opts]` | `train.py --prepare-data <m> [opts]` (default `all`) |
+| `./train.sh cart\|jaw\|phishing\|all [opts]` | `train.py --model <m> [opts]` |
+| `./train.sh demo [cart\|jaw\|phishing\|all] [opts]` | `train.py --model <m> --demo` (default `all`) |
+| `./train.sh prepare\|prep-data\|sample [cart\|jaw\|phishing\|all] [data-dir] [opts]` | `train.py --prepare-data <m> [--data-dir <dir>] [opts]` (default `all`) |
 | `./train.sh inspect [dir]` | `python -m util.manager --inspect <dir>` (default `data`) |
 | `./train.sh cifake <dir> [opts]` | `python -m util.manager --cifake <dir> [opts]` |
 | `./train.sh dashboard\|dash [opts]` | `train.py --model all --dashboard [opts]` |
-| `./train.sh estimate\|est [cart\|jaw\|all] [opts]` | `train.py --model <m> --estimate-only` (default `all`) |
+| `./train.sh estimate\|est [cart\|jaw\|phishing\|all] [opts]` | `train.py --model <m> --estimate-only` (default `all`) |
 | `./train.sh history\|hist\|logs [opts]` | `train.py --history [opts]` |
 | `./train.sh -h\|--help\|help` | Wrapper help followed by `train.py --help` |
 | anything else | Passed through as `train.py <args>` |
 
 Notes:
 
-- The interactive wizard only offers CART, JAW and "all". For phishing, use `./train.sh phishing`.
-- `demo` and `estimate` only recognize `cart|jaw|all` as their model argument. `./train.sh demo phishing` still works, because `phishing` is forwarded as the positional model.
-- `prepare` takes a data dir as a flag, not a positional argument: `./train.sh prepare all --data-dir mydata`. The help text says `prepare [data-dir]`, but a bare path is passed to `train.py` as an invalid model name.
+- The interactive wizard offers CART, JAW, both, and PHISHING (option 8); demo/estimate prompts accept `phishing`.
+- `prepare` accepts a bare path as the data dir: `./train.sh prepare mydata` equals `--prepare-data all --data-dir mydata`, and `./train.sh prepare jaw mydata` targets one model.
+
+### `train.ps1` (Windows PowerShell)
+
+`train.ps1` mirrors `train.sh` exactly (same commands, options, help and wizard) and runs in Windows PowerShell 5.1 and PowerShell 7. Python is picked in this order: `$env:VIRTUAL_ENV\Scripts\python.exe`, `.venv\Scripts\python.exe`, `venv\Scripts\python.exe`, `py -3`, `python`. Extra arguments are passed through to `train.py`.
+
+```powershell
+.\train.ps1 phishing --device cuda
+.\train.ps1 estimate phishing
+# If script execution is disabled:
+powershell -ExecutionPolicy Bypass -File train.ps1 help
+```
 
 ---
 
@@ -96,7 +105,9 @@ The loader looks for a split directory in this order: `{data-dir}/{split}`, `{da
 
 If nothing matches there, it falls back to `{data-dir}/{split}.csv`, then `{data-dir}/{split}.jsonl`, then un-split class folders `{data-dir}/{human,ai_generated}/` (a deterministic 80/20 split, where every 5th file goes to val).
 
-> **Warning:** If no CART data is found, the loader logs a warning and trains on **placeholder sentences**, even without `--demo`. Check the "Loaded N samples" lines before you trust a CART checkpoint.
+If no CART data is found and `--demo` isn't set, the loader reports the missing data and training stops with a "No training text data found" panel. Placeholder sentences are only used with `--demo`.
+
+For `val`, if no `val/` directory exists the loader also tries `valid/`, `validation/` and finally `test/` (`training/data.py: _resolve_split_dir`). This applies to both CART and JAW.
 
 ### JAW (images): `training/data.py: load_image_split`
 
@@ -104,9 +115,11 @@ It uses the same split-dir search with `jaw` as the model subfolder. Every subfo
 
 If there's no split dir, un-split class folders under `{data-dir}` (for example `real/` and `fake/`) are auto-partitioned 80/20. If nothing is found and `--demo` isn't set, JAW reports the missing data and doesn't train.
 
-Only `train/` and `val/` are read. A Kaggle CIFAKE download ships `train/` and `test/`, so import it first:
+A Kaggle CIFAKE download ships `train/` and `test/`; since `test/` is used as the validation split when `val/` is missing, you can point `--data-dir` at it directly. Importing with `util.manager` still works if you want a normalized copy:
 
 ```bash
+python train.py jaw --data-dir /path/to/cifake
+# or
 python -m util.manager --cifake /path/to/cifake --export data/jaw
 python train.py jaw --data-dir data/jaw
 ```
@@ -140,7 +153,7 @@ python -m util.manager --inspect data                   # count images / texts /
 
 - **JAW** generates synthetic images in `{data-dir}/.demo_jaw_cache`.
 - **Phishing** generates sample emails in `{data-dir}/.demo_phishing_cache` when fewer than two classes were found.
-- **CART** always falls back to placeholder text when data is missing, with or without `--demo` (see the warning above).
+- **CART** uses placeholder text when data is missing. Without `--demo`, missing CART data is an error.
 
 ```bash
 python train.py cart --demo
@@ -153,14 +166,14 @@ python train.py all --demo
 
 ## Resume
 
-| Model | `--resume` points at | Resumes when this file exists |
+| Model | `--resume` points at | Required files |
 |---|---|---|
-| `cart` | `checkpoints/cart` | `neural_model.pt` (loads the full detector) |
+| `cart` | `checkpoints/cart` | `neural_model.pt` and `fusion_model.json` (loads the full detector) |
 | `jaw` | `checkpoints/jaw` | `jaw_model.pt` |
 | `phishing` | `checkpoints/phishing` | `warhammer.pt` (warm-starts Warhammer only; Attack and Beast always refit) |
 | `all` | `checkpoints` (the root) | `<root>/cart/...` and `<root>/jaw/...` |
 
-If the expected file is missing, training silently starts from scratch, so double-check the path. Checkpoints are always written to `--checkpoint-dir/<model>` and overwrite what's there.
+If the resume directory doesn't exist or a required file is missing, that model doesn't train: an error panel lists the expected files. `train.py` exits with status 1 when any requested training fails (including a bad `--resume` or missing data). Checkpoints are always written to `--checkpoint-dir/<model>` and overwrite what's there.
 
 ---
 

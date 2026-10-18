@@ -36,6 +36,10 @@ from api.schemas import (
     ImageDetectionResult,
     ModelListResponse,
     ModelStatus,
+    BatchPhishingDetectionRequest,
+    BatchPhishingDetectionResponse,
+    PhishingDetectionRequest,
+    PhishingDetectionResult,
     ReloadModelRequest,
     TextDetectionRequest,
     TextDetectionResult,
@@ -74,6 +78,7 @@ app = FastAPI(
         "Production-grade functional API for calling trained SafeStep AI detection models:\n"
         "- **CART**: AI-Generated Text Detector (DistilBERT + Stylistic Heuristics + XGBoost Fusion)\n"
         "- **JAW**: AI-Generated Image Detector (EfficientNet-B3 + Spectral/Gabor Wavelet Frequency Analysis)\n"
+        "- **Phishing**: Attack -> Beast -> Warhammer escalation pipeline for emails and URLs\n"
         "- **Unified**: Multi-modal synthetic content risk analyzer"
     ),
     version="1.0.0",
@@ -128,6 +133,8 @@ def root():
             "image_detection": "/api/v1/detect/image",
             "image_json_detection": "/api/v1/detect/image/json",
             "batch_image_detection": "/api/v1/detect/batch-images",
+            "phishing_detection": "/api/v1/detect/phishing",
+            "batch_phishing_detection": "/api/v1/detect/phishing/batch",
             "unified_detection": "/api/v1/detect/unified",
         },
     }
@@ -173,13 +180,13 @@ def list_models():
     tags=["Models"],
 )
 def get_model(model_id: str):
-    """Retrieve detailed status for a specific model ('cart' or 'jaw')."""
+    """Retrieve detailed status for a specific model ('cart', 'jaw' or 'phishing')."""
     for status_item in registry.get_status():
         if status_item.model_id.lower() == model_id.lower():
             return status_item
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
-        detail=f"Model '{model_id}' not found. Available models: 'cart', 'jaw'",
+        detail=f"Model '{model_id}' not found. Available models: 'cart', 'jaw', 'phishing'",
     )
 
 
@@ -207,7 +214,11 @@ def reload_model(
     if path:
         allowed_roots = [
             Path(p).resolve().parent
-            for p in (default_api_config.cart_checkpoint_dir, default_api_config.jaw_checkpoint_dir)
+            for p in (
+                default_api_config.cart_checkpoint_dir,
+                default_api_config.jaw_checkpoint_dir,
+                default_api_config.phishing_checkpoint_dir,
+            )
             if p
         ]
         resolved = Path(path).resolve()
@@ -233,10 +244,18 @@ def reload_model(
             "weights_loaded": loaded,
             "checkpoint_path": str(registry._jaw_checkpoint_path),
         }
+    elif mid == "phishing":
+        loaded = registry.reload_phishing(path)
+        return {
+            "model_id": "phishing",
+            "reloaded": True,
+            "weights_loaded": loaded,
+            "checkpoint_path": str(registry._phishing_checkpoint_path),
+        }
     else:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Unknown model '{model_id}'. Available: 'cart', 'jaw'",
+            detail=f"Unknown model '{model_id}'. Available: 'cart', 'jaw', 'phishing'",
         )
 
 
@@ -299,6 +318,63 @@ def detect_batch_text(payload: BatchTextDetectionRequest):
         raise
     except Exception as e:
         logger.error(f"Error in detect_batch_text endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Phishing Detection Endpoints (Attack -> Beast -> Warhammer)
+# ---------------------------------------------------------------------------
+
+@app.post(
+    "/api/v1/detect/phishing",
+    response_model=PhishingDetectionResult,
+    summary="Analyze an email / URL / page text for phishing",
+    tags=["Phishing Detection"],
+)
+def detect_phishing(payload: PhishingDetectionRequest):
+    """Run the Attack -> Beast -> Warhammer escalation pipeline on a single text."""
+    try:
+        return service.predict_phishing(
+            texts=payload.text,
+            threshold=payload.threshold,
+            max_stage=payload.max_stage,
+        )
+    except ModelUnavailableError:
+        raise
+    except Exception as e:
+        logger.error(f"Error in detect_phishing endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+
+@app.post(
+    "/api/v1/detect/phishing/batch",
+    response_model=BatchPhishingDetectionResponse,
+    summary="Batch analyze texts for phishing",
+    tags=["Phishing Detection"],
+)
+def detect_phishing_batch(payload: BatchPhishingDetectionRequest):
+    """Process a batch of texts through the phishing escalation pipeline."""
+    if len(payload.texts) > default_api_config.max_batch_size:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Batch size {len(payload.texts)} exceeds limit of {default_api_config.max_batch_size}",
+        )
+    start_time = time.perf_counter()
+    try:
+        results = service.predict_phishing(
+            texts=payload.texts,
+            threshold=payload.threshold,
+            max_stage=payload.max_stage,
+        )
+        return BatchPhishingDetectionResponse(
+            results=results,
+            count=len(results),
+            latency_ms=round((time.perf_counter() - start_time) * 1000, 2),
+        )
+    except ModelUnavailableError:
+        raise
+    except Exception as e:
+        logger.error(f"Error in detect_phishing_batch endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
@@ -453,6 +529,8 @@ async def detect_unified(
     file: Optional[UploadFile] = File(None, description="Optional image file to analyze"),
     text_threshold: Optional[float] = Form(None),
     image_threshold: Optional[float] = Form(None),
+    phishing_threshold: Optional[float] = Form(None),
+    include_phishing: bool = Form(True, description="Also run the phishing pipeline on the text"),
 ):
     """
     Combined inspection for content containing both text and visual media.
@@ -474,6 +552,8 @@ async def detect_unified(
             image=image_content,
             text_threshold=text_threshold,
             image_threshold=image_threshold,
+            phishing_threshold=phishing_threshold,
+            include_phishing=include_phishing,
         )
     except ModelUnavailableError:
         raise

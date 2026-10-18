@@ -32,6 +32,7 @@ from api.client import SafeStepClient
 from api.schemas import (
     TextDetectionResult,
     ImageDetectionResult,
+    PhishingDetectionResult,
     UnifiedDetectionResponse,
     ModelStatus,
 )
@@ -67,6 +68,17 @@ def predict_image(
     )
 
 
+def predict_phishing(
+    texts: Union[str, List[str]],
+    threshold: Optional[float] = None,
+    max_stage: str = "warhammer",
+) -> Union[PhishingDetectionResult, List[PhishingDetectionResult]]:
+    """
+    Functional entrypoint: Run the Attack -> Beast -> Warhammer phishing pipeline.
+    """
+    return service.predict_phishing(texts=texts, threshold=threshold, max_stage=max_stage)
+
+
 def predict_multimodal(
     text: Optional[str] = None,
     image: Optional[Union[str, Path, bytes, Image.Image]] = None,
@@ -86,7 +98,7 @@ def predict_multimodal(
 
 def get_model_status() -> List[ModelStatus]:
     """Return status of all registered models (CART, JAW)."""
-    return registry.get_status()
+    return registry.get_status()  # CART, JAW, phishing
 
 
 def reload_model(model_id: str, checkpoint_path: Optional[Union[str, Path]] = None) -> bool:
@@ -99,12 +111,15 @@ def reload_model(model_id: str, checkpoint_path: Optional[Union[str, Path]] = No
         return registry.reload_cart(checkpoint_path)
     elif mid == "jaw":
         return registry.reload_jaw(checkpoint_path)
-    raise ValueError(f"Unknown model_id '{model_id}'. Expected 'cart' or 'jaw'.")
+    elif mid == "phishing":
+        return registry.reload_phishing(checkpoint_path)
+    raise ValueError(f"Unknown model_id '{model_id}'. Expected 'cart', 'jaw' or 'phishing'.")
 
 
 __all__ = [
     "predict_text",
     "predict_image",
+    "predict_phishing",
     "predict_multimodal",
     "get_model_status",
     "reload_model",
@@ -115,6 +130,7 @@ __all__ = [
     "default_api_config",
     "TextDetectionResult",
     "ImageDetectionResult",
+    "PhishingDetectionResult",
     "UnifiedDetectionResponse",
     "ModelStatus",
 ]

@@ -1,6 +1,6 @@
 # Deployment
 
-The FastAPI service in `api/` serves **CART** (text) and **JAW** (images). **Phishing isn't served by the API yet.** Use `PhishingDetector` from Python (see the README).
+The FastAPI service in `api/` serves **CART** (AI text), **JAW** (AI images) and the **phishing** pipeline (Attack -> Beast -> Warhammer).
 
 ---
 
@@ -19,6 +19,7 @@ Swagger UI is at `/docs` and ReDoc at `/redoc`.
 ```bash
 python -m api.cli status                                   # registered models + checkpoint status (JSON)
 python -m api.cli predict-text "Some text" [--threshold 0.6] [--features]
+python -m api.cli predict-phishing "Verify your account at http://..." [--threshold 0.6] [--max-stage attack|beast|warhammer]
 python -m api.cli predict-image path/to/img.png [--threshold 0.6]
 python -m api.cli predict-unified --text "..." --image img.png [--text-threshold T] [--image-threshold T]
 ```
@@ -31,9 +32,12 @@ python -m api.cli predict-unified --text "..." --image img.png [--text-threshold
 | POST | `/models/{model_id}/reload` (optional body `{"checkpoint_path": "..."}`) |
 | POST | `/api/v1/detect/text`, `/api/v1/detect/batch-text` |
 | POST | `/api/v1/detect/image` (upload), `/api/v1/detect/image/json`, `/api/v1/detect/batch-images` |
-| POST | `/api/v1/detect/unified` |
+| POST | `/api/v1/detect/phishing` (`{"text", "threshold"?, "max_stage"?}`), `/api/v1/detect/phishing/batch` (`{"texts": [...], ...}`) |
+| POST | `/api/v1/detect/unified` (form fields `text`, `file`, `text_threshold`, `image_threshold`, `phishing_threshold`, `include_phishing`) |
 
-`model_id` is `cart` or `jaw`. Every response carries an `X-Process-Time-Ms` header.
+Phishing results carry `p_phishing`, `label` (`phishing`/`legitimate`), `stage` (which stage decided) and `is_mock`. The unified endpoint also runs phishing on `text` and returns `phishing_result`; it only feeds `risk_score` when real weights are loaded.
+
+`model_id` is `cart`, `jaw` or `phishing`. Every response carries an `X-Process-Time-Ms` header.
 
 ---
 
@@ -48,8 +52,10 @@ python -m api.cli predict-unified --text "..." --image img.png [--text-threshold
 | `SAFESTEP_DEVICE` | `auto` | Inference device (`auto`, `cpu`, `cuda`, `mps`) |
 | `SAFESTEP_CART_CHECKPOINT` | `checkpoints/cart` | CART checkpoint directory |
 | `SAFESTEP_JAW_CHECKPOINT` | `checkpoints/jaw` | JAW checkpoint directory |
+| `SAFESTEP_PHISHING_CHECKPOINT` | `checkpoints/phishing` | Phishing checkpoint directory (also an allowed reload root) |
 | `SAFESTEP_CART_THRESHOLD` | model default (`0.5`) | CART decision threshold |
 | `SAFESTEP_JAW_THRESHOLD` | model default (`0.5`) | JAW decision threshold |
+| `SAFESTEP_PHISHING_THRESHOLD` | model default (`0.5`) | Phishing decision threshold on `p_phishing` |
 | `SAFESTEP_ADMIN_TOKEN` | unset | Required in the `X-Admin-Token` header for `POST /models/{id}/reload`. Unset leaves reload open (dev only) |
 | `SAFESTEP_CORS_ORIGINS` | unset → `*` | Comma-separated allowed browser origins; empty string allows none |
 | `SAFESTEP_MOCK_FALLBACK` | `true` (image: `false`) | If `false`, requests to a model without trained weights return `503` instead of untrained output |
@@ -71,13 +77,13 @@ checkpoints/
 │   └── fusion_model.json
 ├── jaw/
 │   └── jaw_model.pt
-└── phishing/            # written by training, not used by the API
+└── phishing/
     ├── attack.joblib
     ├── beast.json
     └── warhammer.pt     # optional
 ```
 
-Models load lazily on first use. If the checkpoint files are missing, the server still starts. With `SAFESTEP_MOCK_FALLBACK=false` (the Docker default) detection requests for that model return `503`; with `true` it serves an untrained model (random CART head/fusion, or JAW with a random head). Check `GET /models` (or `python -m api.cli status`) and confirm `weights_found` is `true` before trusting any output.
+Models load lazily on first use. If the checkpoint files are missing, the server still starts. With `SAFESTEP_MOCK_FALLBACK=false` (the Docker default) detection requests for that model return `503`; with `true` it serves an untrained model (random CART head/fusion, or JAW with a random head). Phishing in mock mode returns a neutral `p_phishing=0.5`, `label=legitimate`, `stage=none`, `is_mock=true`. Phishing weights count as loaded once `attack.joblib` and `beast.json` load; Warhammer (DistilBERT) is only constructed when `warhammer.pt` exists (`details.warhammer_ready`). Check `GET /models` (or `python -m api.cli status`) and confirm `weights_found` is `true` before trusting any output.
 
 After retraining, hot-swap the weights without a restart:
 
@@ -119,6 +125,6 @@ docker run -p 8000:8000 -v ./checkpoints:/app/checkpoints --env-file .env safest
 - [ ] **Set `SAFESTEP_ADMIN_TOKEN`** to a long random secret (`python -c "import secrets; print(secrets.token_hex(32))"`); without it `/models/{id}/reload` is unauthenticated.
 - [ ] **Restrict CORS** with `SAFESTEP_CORS_ORIGINS=https://your-frontend.example`.
 - [ ] Keep `SAFESTEP_MOCK_FALLBACK=false` so missing weights fail with `503` instead of returning junk.
-- [ ] **Mount checkpoints** at `/app/checkpoints` and confirm `GET /models` reports `weights_found: true` for both `cart` and `jaw`.
+- [ ] **Mount checkpoints** at `/app/checkpoints` and confirm `GET /models` reports `weights_found: true` for `cart`, `jaw` and `phishing`.
 - [ ] Never commit `.env`.
 - [ ] Put the service behind a reverse proxy / TLS terminator, and size request limits to match `max_upload_size_bytes` (25 MB).

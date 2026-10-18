@@ -45,16 +45,20 @@ def _make_placeholder_image_data(cache_dir: Path, split: str, n: int = 30) -> Tu
 
 
 def _resolve_split_dir(data_dir: Path, model_sub: str, split: str) -> Optional[Path]:
-    """Check common subdirectories for a given split."""
-    candidates = [
-        data_dir / split,
-        data_dir / model_sub / split,
-        data_dir / "cifake" / split,
-        data_dir / "sample" / split,
-    ]
-    for c in candidates:
-        if c.exists() and c.is_dir():
-            return c
+    """Check common subdirectories for a given split.
+
+    For ``val``, falls back to ``valid/``, ``validation/`` and finally ``test/``
+    (e.g. CIFAKE ships only train/ + test/).
+    """
+    names = [split]
+    if split == "val":
+        names += ["valid", "validation", "test"]
+    roots = [data_dir, data_dir / model_sub, data_dir / "cifake", data_dir / "sample"]
+    for name in names:
+        for root in roots:
+            c = root / name
+            if c.exists() and c.is_dir():
+                return c
     return None
 
 
@@ -62,7 +66,7 @@ def load_text_split(
     data_dir: Path,
     split: str,
     console: Optional[Console] = None,
-    allow_demo: bool = True,
+    allow_demo: bool = False,
 ) -> Tuple[list, list]:
     """
     Load text data for a split. Supports:
@@ -71,7 +75,8 @@ def load_text_split(
       - {split}.jsonl
       - {split}/{human,ai_generated}/*.txt
       - Un-split class folders (auto-partitioned 80/20 train/val)
-    Falls back to placeholder data if files are not found.
+    If no data is found, returns empty lists unless allow_demo=True, in which
+    case placeholder sentences are generated for smoke tests.
     """
     data_dir = Path(data_dir)
     split_dir = _resolve_split_dir(data_dir, "cart", split)
@@ -140,7 +145,7 @@ def load_text_split(
             return texts, labels
 
     # 5. Check un-split root directory {data_dir}/{human,ai_generated}/*.txt (auto 80/20 partition)
-    root_classes = [p for p in data_dir.iterdir() if p.is_dir()]
+    root_classes = [p for p in data_dir.iterdir() if p.is_dir()] if data_dir.is_dir() else []
     if any(normalize_text_label(p.name) in ("human", "ai_generated") for p in root_classes):
         texts, labels = _load_and_partition_text_classes(data_dir, split)
         if texts:
@@ -148,9 +153,14 @@ def load_text_split(
                 console.print(f"  [green]✓[/green] Auto-partitioned {len(texts):,} {split} text samples from {data_dir}")
             return texts, labels
 
+    if not allow_demo:
+        if console:
+            console.print(f"  [red]✗[/red] No {split} text data found under [dim]{data_dir}[/dim].")
+        return [], []
+
     if console:
         console.print(
-            f"  [yellow]⚠[/yellow]  No {split} text data found under [dim]{data_dir}[/dim] — using placeholder data."
+            f"  [yellow]⚠[/yellow]  No {split} text data found under [dim]{data_dir}[/dim] — using placeholder data (demo mode)."
         )
     n = 200 if split == "train" else 50
     return _make_placeholder_text_data(n)

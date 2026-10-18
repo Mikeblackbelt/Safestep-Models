@@ -15,6 +15,8 @@ from api.schemas import (
     ImageDetectionResult,
     ModelListResponse,
     ModelStatus,
+    BatchPhishingDetectionResponse,
+    PhishingDetectionResult,
     TextDetectionResult,
     UnifiedDetectionResponse,
 )
@@ -88,6 +90,25 @@ class SafeStepClient:
             resp = self._client.post("/api/v1/detect/text", json=payload, params=params)
             resp.raise_for_status()
             return TextDetectionResult(**resp.json())
+
+    def predict_phishing(
+        self,
+        text: Union[str, List[str]],
+        threshold: Optional[float] = None,
+        max_stage: str = "warhammer",
+    ) -> Union[PhishingDetectionResult, List[PhishingDetectionResult]]:
+        """
+        Detect whether an email / URL / page text is phishing (single string or list).
+        """
+        if isinstance(text, list):
+            payload = {"texts": text, "threshold": threshold, "max_stage": max_stage}
+            resp = self._client.post("/api/v1/detect/phishing/batch", json=payload)
+            resp.raise_for_status()
+            return BatchPhishingDetectionResponse(**resp.json()).results
+        payload = {"text": text, "threshold": threshold, "max_stage": max_stage}
+        resp = self._client.post("/api/v1/detect/phishing", json=payload)
+        resp.raise_for_status()
+        return PhishingDetectionResult(**resp.json())
 
     def predict_image(
         self,

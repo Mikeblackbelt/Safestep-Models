@@ -91,7 +91,7 @@ text ──► Attack ──► p in (attack_escalate_low, attack_escalate_high)
 | `beast.json` | XGBoost model | yes |
 | `warhammer.pt` | DistilBERT classifier `state_dict` | no. Only written when Warhammer was trained, and skipped on load if missing |
 
-Phishing is not served by the API yet (see [deployment.md](deployment.md)).
+The API serves phishing at `/api/v1/detect/phishing` and `/api/v1/detect/phishing/batch`, and in the unified endpoint's `phishing_result` (see [deployment.md](deployment.md)).
 
 ---
 

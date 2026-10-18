@@ -3,6 +3,7 @@ Unit and integration tests for SafeStep Python Functional API.
 """
 
 from pathlib import Path
+import numpy as np
 import pytest
 from PIL import Image
 
@@ -30,6 +31,7 @@ def test_model_status():
     model_ids = {s.model_id for s in statuses}
     assert "cart" in model_ids
     assert "jaw" in model_ids
+    assert "phishing" in model_ids
 
 
 def test_predict_text_single():
@@ -121,3 +123,48 @@ def test_reload_model():
     """Test reloading model from default/specified path."""
     reloaded = api.reload_model("cart")
     assert isinstance(reloaded, bool)
+
+
+def test_predict_phishing_single_and_batch():
+    from api.schemas import PhishingDetectionResult
+    res = api.predict_phishing("Urgent: confirm your login at http://paypa1.example", threshold=0.7)
+    assert isinstance(res, PhishingDetectionResult)
+    assert res.decision_threshold == 0.7
+    assert 0.0 <= res.p_phishing <= 1.0
+    assert abs(res.p_phishing + res.p_legitimate - 1.0) < 1e-3
+    if res.is_mock:
+        assert res.stage == "none" and res.p_phishing == 0.5
+    else:
+        assert res.label == ("phishing" if res.p_phishing >= 0.7 else "legitimate")
+    batch = api.predict_phishing(["hi team", "verify now"], max_stage="attack")
+    assert len(batch) == 2
+    assert all(r.stage in ("attack", "none") for r in batch)
+
+
+def test_phishing_real_model_roundtrip(tmp_path, monkeypatch):
+    """Fit a tiny Attack/Beast checkpoint, then serve it through the registry."""
+    from api.config import APIConfig
+    from api.model_registry import SafeStepModelRegistry
+    from api.service import SafeStepService
+    from phishing.config import PhishingConfig
+    from phishing.detector import PhishingDetector
+
+    texts = [f"Meeting notes for project {i}, see you tomorrow." for i in range(20)] + [
+        f"URGENT verify your account password at http://login{i}.example.ru/secure now" for i in range(20)
+    ]
+    labels = np.array([0] * 20 + [1] * 20)
+    det = PhishingDetector(PhishingConfig(use_warhammer=False))
+    det.attack.fit(texts, labels)
+    feats = det.beast.build_features(det.attack.predict_proba(texts), det.indicators.extract_batch(texts))
+    det.beast.fit(feats, labels)
+    det.save(tmp_path)
+
+    cfg = APIConfig(phishing_checkpoint_dir=tmp_path, enable_mock_fallback=False)
+    monkeypatch.delenv("SAFESTEP_PHISHING_CHECKPOINT", raising=False)
+    cfg.phishing_checkpoint_dir = tmp_path
+    reg = SafeStepModelRegistry(cfg)
+    svc = SafeStepService(reg)
+    out = svc.predict_phishing(texts[:1] + texts[-1:])
+    assert all(not r.is_mock for r in out)
+    assert reg._phishing_detector.warhammer is None
+    assert out[0].label == "legitimate" and out[1].label == "phishing"

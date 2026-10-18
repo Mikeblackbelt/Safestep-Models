@@ -51,6 +51,7 @@ def test_models_list(client):
     models = {m["model_id"]: m for m in data["models"]}
     assert "cart" in models
     assert "jaw" in models
+    assert "phishing" in models
 
 
 def test_model_detail(client):
@@ -201,3 +202,66 @@ def test_safestep_client_sdk(client, sample_assets):
             image=sample_assets["synthetic"],
         )
         assert u_res.overall_risk in ("HIGH", "MEDIUM", "LOW")
+
+
+@pytest.fixture
+def phishing_client():
+    # Fresh client per test: the SDK test above closes the shared module client.
+    with TestClient(app) as c:
+        yield c
+
+
+def test_detect_phishing(phishing_client):
+    """Test POST /api/v1/detect/phishing (mock or real weights)."""
+    payload = {"text": "Your account is locked, verify at http://bad.example/login", "threshold": 0.6, "max_stage": "beast"}
+    resp = phishing_client.post("/api/v1/detect/phishing", json=payload)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["model"] == "Phishing"
+    assert data["decision_threshold"] == 0.6
+    assert 0.0 <= data["p_phishing"] <= 1.0
+    assert data["label"] in ("phishing", "legitimate")
+    assert data["stage"] in ("attack", "beast", "warhammer", "none")
+    assert isinstance(data["is_mock"], bool)
+
+
+def test_detect_phishing_batch_and_validation(phishing_client):
+    resp = phishing_client.post("/api/v1/detect/phishing/batch", json={"texts": ["hello", "click http://x.example"]})
+    assert resp.status_code == 200
+    assert resp.json()["count"] == 2
+    bad = phishing_client.post("/api/v1/detect/phishing", json={"text": "hi", "max_stage": "nuke"})
+    assert bad.status_code == 422
+
+
+def test_phishing_model_detail_and_reload(phishing_client):
+    resp = phishing_client.get("/models/phishing")
+    assert resp.status_code == 200
+    assert "warhammer_ready" in resp.json()["details"]
+    r = phishing_client.post("/models/phishing/reload", json={})
+    assert r.status_code == 200
+    assert r.json()["model_id"] == "phishing"
+    assert phishing_client.post("/models/phishing/reload", json={"checkpoint_path": "/etc"}).status_code == 400
+
+
+def test_phishing_503_without_mock_fallback(phishing_client, monkeypatch):
+    from api.model_registry import registry
+    monkeypatch.setattr(registry.config, "enable_mock_fallback", False)
+    monkeypatch.setattr(registry, "_phishing_weights_loaded", False)
+    monkeypatch.setattr(registry, "_phishing_detector", object())
+    resp = phishing_client.post("/api/v1/detect/phishing", json={"text": "hello world"})
+    assert resp.status_code == 503
+
+
+def test_unified_includes_phishing(phishing_client):
+    resp = phishing_client.post("/api/v1/detect/unified", data={"text": "Verify your password now"})
+    assert resp.status_code == 200
+    assert resp.json()["phishing_result"] is not None
+
+
+def test_sdk_predict_phishing(phishing_client):
+    from api.client import SafeStepClient
+    with SafeStepClient(client=phishing_client) as sdk_client:
+        single = sdk_client.predict_phishing("Reset your bank password here")
+        assert single.model == "Phishing"
+        batch = sdk_client.predict_phishing(["a", "b"], max_stage="attack")
+        assert len(batch) == 2
