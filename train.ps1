@@ -66,6 +66,7 @@ function Show-Help {
     Write-Host ''
     Write-Host 'Utility & Monitoring Commands:' -ForegroundColor White
     Write-Row '.\train.ps1 prepare [model] [data-dir]' 'Generate sample datasets (model: cart|jaw|phishing|all)' Cyan
+    Write-Row '.\train.ps1 download [sources...]' 'Download real phishing datasets (default: hf_emails hf_urls; all = every source)' Cyan
     Write-Row '.\train.ps1 inspect [dir]' 'Inspect a folder and report image/text counts' Cyan
     Write-Row '.\train.ps1 cifake <dir>' 'Import downloaded CIFAKE folder into data/jaw' Cyan
     Write-Row '.\train.ps1 dashboard' 'Train with full-screen live dashboard & metrics' Cyan
@@ -167,6 +168,7 @@ switch ($Cmd.ToLower()) {
         }
         Invoke-Py (@('train.py', '--prepare-data', $s.Model) + $r)
     }
+    { @('download', 'dl') -contains $_ } { Invoke-Py (@('train.py', '--download-data') + $Rest) }
     'inspect' {
         $dir = 'data'
         if ($Rest.Count -gt 0) { $dir = [string]$Rest[0] }

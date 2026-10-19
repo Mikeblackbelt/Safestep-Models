@@ -58,6 +58,8 @@ print_help() {
     echo -e "${BOLD}Utility & Monitoring Commands:${NC}"
     echo -e "  ${CYAN}./train.sh prepare [model] [data-dir]${NC}
                                   Generate sample datasets (model: cart|jaw|phishing|all)"
+    echo -e "  ${CYAN}./train.sh download [sources...]${NC}
+                                  Download real phishing datasets (default: hf_emails hf_urls; 'all' for every source)"
     echo -e "  ${CYAN}./train.sh inspect [dir]${NC}        Inspect a folder and report image/text counts"
     echo -e "  ${CYAN}./train.sh cifake <dir>${NC}         Import downloaded CIFAKE folder into data/jaw"
     echo -e "  ${CYAN}./train.sh dashboard${NC}            Train with full-screen live dashboard & metrics"
@@ -183,6 +185,9 @@ case "$CMD" in
             set -- --data-dir "$1" "${@:2}"
         fi
         exec "$PY_BIN" train.py --prepare-data "$TARGET" "$@"
+        ;;
+    download|dl)
+        exec "$PY_BIN" train.py --download-data "$@"
         ;;
     inspect)
         DIR="${1:-data}"

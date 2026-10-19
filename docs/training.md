@@ -50,8 +50,11 @@ For phishing, `--epochs-frozen`, `--epochs-finetune`, `--batch-size` and `--lr` 
 |---|---|---|
 | `--demo` | off | Use generated sample data when the real dataset is missing |
 | `--prepare-data [{cart,jaw,phishing,all}]` | `all` if given bare | Generate sample datasets under `--data-dir` and exit |
+| `--download-data [SOURCE ...]` | `hf_emails hf_urls` if given bare | Download real phishing datasets into `<data-dir>/phishing/downloads` and exit. Sources: `hf_emails`, `hf_urls`, `enron`, `openphish`, `phishtank`, `tranco`, `default`, `all` |
+| `--max-samples N` | `20000` | Max records kept per downloaded source, balanced by label. `0` keeps everything |
+| `--no-download` | off | Don't download phishing data automatically when local data is missing |
 
-`--history` and `--prepare-data` are handled first and exit before any training.
+`--history`, `--download-data` and `--prepare-data` are handled first and exit before any training.
 
 ---
 
@@ -66,6 +69,7 @@ For phishing, `--epochs-frozen`, `--epochs-finetune`, `--batch-size` and `--lr` 
 | `./train.sh cart\|jaw\|phishing\|all [opts]` | `train.py --model <m> [opts]` |
 | `./train.sh demo [cart\|jaw\|phishing\|all] [opts]` | `train.py --model <m> --demo` (default `all`) |
 | `./train.sh prepare\|prep-data\|sample [cart\|jaw\|phishing\|all] [data-dir] [opts]` | `train.py --prepare-data <m> [--data-dir <dir>] [opts]` (default `all`) |
+| `./train.sh download\|dl [sources...] [opts]` | `train.py --download-data [sources...] [opts]` |
 | `./train.sh inspect [dir]` | `python -m util.manager --inspect <dir>` (default `data`) |
 | `./train.sh cifake <dir> [opts]` | `python -m util.manager --cifake <dir> [opts]` |
 | `./train.sh dashboard\|dash [opts]` | `train.py --model all --dashboard [opts]` |
@@ -133,8 +137,13 @@ Root is `{data-dir}/phishing` if it exists, otherwise `{data-dir}`. Sources:
 | Enron spam | `enron_spam/spam/*.txt`, `enron_spam/ham/*.txt` | phishing / legitimate |
 | UCI phishing websites | `uci_phishing.data` | both |
 | PhishTank | `phishtank.csv` | phishing only |
+| Generic files | any `*.csv`, `*.tsv`, `*.jsonl`, `*.json` at any depth (includes `downloads/*.jsonl`) | from the label column |
 
-You need both classes. PhishTank on its own fails with "Need both phishing and legitimate samples". Splits come from `PhishingDatasetLoader.get_splits()`.
+Generic files (`PhishingDatasetLoader.load_file` / `load_directory`) need a text column (`text`, `body`, `email`, `email text`, `content`, `message`, `url`) and a label column (`label`, `class`, `type`, `email type`, `target`, `is_phishing`, `status`, `category`), matched case-insensitively. Labels go through `normalize_phishing_label`: `phishing`/`spam`/`malicious`/`1`/`-1` become `phishing`, `legitimate`/`ham`/`safe`/`benign`/`0` become `legitimate`, and other rows are skipped with a warning. A `.json` file may be a list of objects or an object holding one. Paths inside `raw/`, `enron_spam/`, `cart/` or `jaw/`, the `phishtank.*` and `uci_phishing.csv` files, and dotfiles are skipped.
+
+**Automatic download.** Without `--demo` or `--no-download`, if fewer than two classes or fewer than 500 samples are found, `util/download.py` fetches the default sources (`hf_emails`, `hf_urls`) into `{data-dir}/phishing/downloads/`, then loads the data again. Each source is cached as `downloads/raw/<file>` and normalized to `downloads/<source>.jsonl` (one `{"text", "label"}` per line), capped at `--max-samples` per source and balanced by label (seed 42). Existing `.jsonl` files are reused; `python -m util.download --force` rebuilds them. A source that fails is reported and skipped. `HF_ENDPOINT` and `HF_TOKEN` are honored for Hugging Face URLs.
+
+You need both classes. If none of this produces both, training fails with "Need both phishing and legitimate samples". Splits come from `PhishingDatasetLoader.get_splits()`.
 
 ### Sample data
 

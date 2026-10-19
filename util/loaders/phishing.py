@@ -4,6 +4,7 @@ the Attack / Beast / Warhammer escalation pipeline.
 """
 
 import argparse
+import json
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -14,6 +15,39 @@ from util.datasets.text import TextDataset
 from util.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+PHISHING_ALIASES = {
+    "phishing", "phish", "spam", "malicious", "bad", "fraud", "scam", "1", "1.0", "true",
+    "yes", "-1", "phishing email", "phishing_email", "phishing url", "unsafe",
+}
+LEGITIMATE_ALIASES = {
+    "legitimate", "legit", "ham", "benign", "good", "safe", "normal", "0", "0.0", "false",
+    "no", "safe email", "safe_email", "not phishing", "clean",
+}
+TEXT_COLUMNS = ("text", "body", "email", "email text", "email_text", "content", "message", "url", "urls")
+LABEL_COLUMNS = ("label", "labels", "class", "type", "email type", "email_type", "target", "is_phishing", "status", "category")
+GENERIC_SUFFIXES = {".csv", ".tsv", ".jsonl", ".json"}
+# Files and folders handled by the dedicated loaders, never re-read as generic files.
+SPECIAL_NAMES = {"phishtank.csv", "phishtank.json", "uci_phishing.csv", "raw", "enron_spam", "cart", "jaw"}
+
+
+def normalize_phishing_label(label) -> Optional[str]:
+    """Map common label spellings to 'phishing' / 'legitimate'; None if unrecognized."""
+    cleaned = str(label).strip().lower()
+    if cleaned in PHISHING_ALIASES:
+        return "phishing"
+    if cleaned in LEGITIMATE_ALIASES:
+        return "legitimate"
+    if any(k in cleaned for k in ("phish", "spam", "malic", "fraud", "scam")):
+        return "phishing"
+    if any(k in cleaned for k in ("legit", "ham", "benign", "safe")):
+        return "legitimate"
+    return None
+
+
+def _pick_column(columns, preferred) -> Optional[str]:
+    lowered = {str(c).strip().lower(): c for c in columns}
+    return next((lowered[name] for name in preferred if name in lowered), None)
 
 
 class PhishingDatasetLoader:
@@ -62,7 +96,7 @@ class PhishingDatasetLoader:
         logger.info("Loading Enron spam corpus...")
         candidates = self._resolve_candidate_dirs("enron_spam", path)
         if not candidates:
-            logger.warning(
+            logger.debug(
                 f"Enron corpus not found. Download from {self.DATASETS['enron_spam']['url']} "
                 f"and extract to data/phishing/enron_spam or {self.config.cache_dir}/enron_spam."
             )
@@ -107,7 +141,7 @@ class PhishingDatasetLoader:
                 break
 
         if not target_path:
-            logger.warning(
+            logger.debug(
                 f"UCI phishing dataset not found. Download from {self.DATASETS['uci_phishing']['url']}."
             )
             return self.text_dataset
@@ -137,7 +171,7 @@ class PhishingDatasetLoader:
         ])
         target = next((c for c in candidates if c.exists()), None)
         if not target:
-            logger.warning("PhishTank data not found.")
+            logger.debug("PhishTank data not found.")
             return self.text_dataset
 
         try:
@@ -152,12 +186,78 @@ class PhishingDatasetLoader:
             logger.error(f"Error loading PhishTank: {e}")
         return self.text_dataset
 
+    def load_file(self, path: Union[str, Path]) -> int:
+        """
+        Load a generic CSV/TSV/JSONL/JSON file with a text column and a label column.
+
+        Text columns tried: text, body, email text, content, message, url.
+        Label columns tried: label, class, type, email type, target, is_phishing.
+        Labels such as spam/phishing/1 and ham/legitimate/safe/0 are normalized.
+        Returns the number of records added.
+        """
+        path = Path(path)
+        suffix = path.suffix.lower()
+        try:
+            if suffix == ".jsonl":
+                df = pd.read_json(path, lines=True)
+            elif suffix == ".json":
+                with open(path, "r", encoding="utf-8") as f:
+                    payload = json.load(f)
+                if isinstance(payload, dict):
+                    payload = next((v for v in payload.values() if isinstance(v, list)), [])
+                df = pd.DataFrame(payload)
+            else:
+                df = pd.read_csv(path, sep="\t" if suffix == ".tsv" else ",", on_bad_lines="skip",
+                                 encoding_errors="ignore", engine="python")
+        except Exception as e:
+            logger.warning(f"Skipping {path}: could not parse ({e})")
+            return 0
+
+        text_col = _pick_column(df.columns, TEXT_COLUMNS)
+        label_col = _pick_column(df.columns, LABEL_COLUMNS)
+        if text_col is None or label_col is None:
+            logger.warning(
+                f"Skipping {path}: need a text column ({', '.join(TEXT_COLUMNS)}) and a label column "
+                f"({', '.join(LABEL_COLUMNS)}); found {list(df.columns)}"
+            )
+            return 0
+
+        added, unknown = 0, set()
+        for text, raw_label in zip(df[text_col], df[label_col]):
+            if pd.isna(text) or pd.isna(raw_label):
+                continue
+            label = normalize_phishing_label(raw_label)
+            if label is None:
+                unknown.add(str(raw_label))
+                continue
+            before = len(self.text_dataset.data)
+            self.text_dataset.add_records([{"text": str(text)}], label=label)
+            added += len(self.text_dataset.data) - before
+        if unknown:
+            logger.warning(f"{path}: ignored rows with unrecognized labels {sorted(unknown)[:10]}")
+        logger.info(f"Loaded {added} records from {path}")
+        return added
+
+    def load_directory(self, root: Union[str, Path]) -> int:
+        """Load every generic CSV/TSV/JSONL/JSON file under root (recursively)."""
+        root = Path(root)
+        if not root.is_dir():
+            return 0
+        total = 0
+        for path in sorted(root.rglob("*")):
+            rel_parts = {p.lower() for p in path.relative_to(root).parts}
+            if (path.is_file() and path.suffix.lower() in GENERIC_SUFFIXES
+                    and not rel_parts & SPECIAL_NAMES and not path.name.startswith(".")):
+                total += self.load_file(path)
+        return total
+
     def load_all(self) -> TextDataset:
         """Load all available phishing datasets."""
         logger.info("Loading all phishing datasets...")
         self.load_enron_spam()
         self.load_uci_phishing()
         self.load_phishtank()
+        self.load_directory(Path("data") / "phishing")
 
         logger.info(f"Total phishing samples: {len(self.text_dataset.data)}")
         return self.text_dataset

@@ -116,3 +116,70 @@ def test_warhammer_trains_and_takes_escalations(splits, tmp_path):
     assert not restored.warhammer_ready
     restored.load(tmp_path)
     assert restored.warhammer_ready
+
+
+def test_normalize_phishing_label_aliases():
+    from util.loaders.phishing import normalize_phishing_label
+
+    for raw in ("phishing", "Phishing Email", "spam", 1, "1", "malicious"):
+        assert normalize_phishing_label(raw) == "phishing"
+    for raw in ("legitimate", "Safe Email", "ham", 0, "benign"):
+        assert normalize_phishing_label(raw) == "legitimate"
+    assert normalize_phishing_label("unknown-thing") is None
+
+
+def test_load_directory_reads_generic_csv_and_jsonl(tmp_path):
+    (tmp_path / "emails.csv").write_text(
+        'Email Text,Email Type\n"verify your account",Phishing Email\n"lunch?",Safe Email\n"x",weird\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "nested").mkdir()
+    (tmp_path / "nested" / "urls.jsonl").write_text(
+        '{"url": "http://bad.example", "label": 1}\n{"url": "https://good.example", "label": 0}\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "raw").mkdir()  # raw downloads are never read as generic files
+    (tmp_path / "raw" / "ignored.json").write_text('[{"text": "nope", "label": 1}]', encoding="utf-8")
+
+    loader = PhishingDatasetLoader()
+    assert loader.load_directory(tmp_path) == 4
+    pairs = dict(zip(loader.text_dataset.data, loader.text_dataset.labels))
+    assert pairs == {
+        "verify your account": "phishing", "lunch?": "legitimate",
+        "http://bad.example": "phishing", "https://good.example": "legitimate",
+    }
+
+
+def test_download_source_normalizes_and_balances(tmp_path, monkeypatch):
+    import json
+
+    from util import download
+
+    def fake_fetch(url, dest, progress=None):
+        rows = [{"text": f"phish {i}", "label": 1} for i in range(30)]
+        rows += [{"text": f"ham {i}", "label": 0} for i in range(10)]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(json.dumps(rows), encoding="utf-8")
+
+    monkeypatch.setattr(download, "_fetch", fake_fetch)
+    path, counts = download.download_source("hf_emails", tmp_path, max_samples=20)
+    assert counts == {"phishing": 10, "legitimate": 10}
+    assert path == tmp_path / "hf_emails.jsonl"
+
+    loader = PhishingDatasetLoader()
+    assert loader.load_directory(tmp_path) == 20
+
+    # Cached output is reused without fetching again.
+    monkeypatch.setattr(download, "_fetch", lambda *a, **k: pytest.fail("should not re-download"))
+    assert download.download_source("hf_emails", tmp_path, max_samples=20)[1] == counts
+
+
+def test_resolve_sources():
+    from util.download import DEFAULT_SOURCES, SOURCES, resolve_sources
+
+    assert resolve_sources(None) == DEFAULT_SOURCES
+    assert resolve_sources([]) == DEFAULT_SOURCES
+    assert resolve_sources(["all"]) == list(SOURCES)
+    assert resolve_sources(["openphish,tranco", "openphish"]) == ["openphish", "tranco"]
+    with pytest.raises(ValueError):
+        resolve_sources(["nope"])

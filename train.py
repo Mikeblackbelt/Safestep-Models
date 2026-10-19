@@ -543,15 +543,50 @@ def train_jaw(
 
 # ── Phishing (Attack / Beast / Warhammer) training entry-point ───────────────────
 
-def _load_phishing_splits(data_dir: Path, demo: bool) -> dict:
-    """Load phishing data from {data_dir}/phishing or {data_dir}, generating samples in demo mode."""
+# Below this many samples the data is treated as a toy set and real data is downloaded.
+_PHISHING_MIN_SAMPLES = 500
+
+
+def _read_phishing_sources(root: Path):
     from util.loaders.phishing import PhishingDatasetLoader
 
-    root = data_dir / "phishing" if (data_dir / "phishing").exists() else data_dir
     loader = PhishingDatasetLoader()
     loader.load_enron_spam(root / "enron_spam")
     loader.load_uci_phishing(root / "uci_phishing.data")
     loader.load_phishtank(root / "phishtank.csv")
+    loader.load_directory(root)
+    return loader
+
+
+def _load_phishing_splits(
+    data_dir: Path,
+    demo: bool,
+    auto_download: bool = True,
+    max_samples: Optional[int] = None,
+) -> dict:
+    """
+    Load phishing data from {data_dir}/phishing or {data_dir}. Without --demo, missing or
+    toy-sized data triggers a download of the default sources into {data_dir}/phishing/downloads.
+    """
+    from util.loaders.phishing import PhishingDatasetLoader
+
+    root = data_dir / "phishing" if (data_dir / "phishing").exists() else data_dir
+    loader = _read_phishing_sources(root)
+    labels = loader.text_dataset.labels
+
+    if not demo and auto_download and (len(set(labels)) < 2 or len(labels) < _PHISHING_MIN_SAMPLES):
+        from util.download import DEFAULT_MAX_SAMPLES, download_phishing_data
+
+        console.print(
+            f"  [cyan]ℹ[/cyan] Found {len(labels)} phishing samples locally; downloading real datasets "
+            f"into [cyan]{data_dir / 'phishing' / 'downloads'}[/cyan] (disable with --no-download)…"
+        )
+        download_phishing_data(
+            data_dir / "phishing" / "downloads",
+            max_samples=DEFAULT_MAX_SAMPLES if max_samples is None else max_samples,
+            console=console,
+        )
+        loader = _read_phishing_sources(data_dir / "phishing")
 
     if len(set(loader.text_dataset.labels)) < 2 and demo:
         demo_dir = data_dir / ".demo_phishing_cache"
@@ -596,6 +631,8 @@ def train_phishing(
     runs_dir: Path = Path("runs"),
     run_id: Optional[str] = None,
     demo: bool = False,
+    auto_download: bool = True,
+    max_samples: Optional[int] = None,
 ) -> bool:
     """Run Attack -> Beast -> Warhammer training. Returns True on success."""
     console.print(Rule("[bold red]Phishing — Attack / Beast / Warhammer[/bold red]"))
@@ -610,7 +647,7 @@ def train_phishing(
         resume = None
 
     console.print("[dim]Loading phishing data…[/dim]")
-    splits = _load_phishing_splits(data_dir, demo)
+    splits = _load_phishing_splits(data_dir, demo, auto_download, max_samples)
     if not splits:
         console.print(
             Panel(
@@ -619,8 +656,10 @@ def train_phishing(
                 "[bold]Supported sources:[/bold]\n"
                 "  1. Enron spam:  [cyan]enron_spam/spam/*.txt[/cyan] and [cyan]enron_spam/ham/*.txt[/cyan]\n"
                 "  2. UCI phishing websites: [cyan]uci_phishing.data[/cyan]\n"
-                "  3. PhishTank URLs: [cyan]phishtank.csv[/cyan] (phishing only; pair with a legitimate source)\n\n"
+                "  3. PhishTank URLs: [cyan]phishtank.csv[/cyan] (phishing only; pair with a legitimate source)\n"
+                "  4. Any [cyan]*.csv / *.jsonl / *.json[/cyan] with a text column and a label column\n\n"
                 "[bold]Quick solutions:[/bold]\n"
+                "  • [yellow]Download real data:[/yellow]    python train.py --download-data\n"
                 "  • [yellow]Run instant demo:[/yellow]      python -m train --model phishing --demo\n"
                 "  • [yellow]Generate sample data:[/yellow]  python -m train --prepare-data phishing\n",
                 title="Phishing Training - Data Missing",
@@ -963,6 +1002,26 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Generate ready-to-train sample datasets under --data-dir and exit",
     )
+    data_grp.add_argument(
+        "--download-data",
+        nargs="*",
+        default=None,
+        metavar="SOURCE",
+        help="Download real phishing datasets into <data-dir>/phishing/downloads and exit. "
+             "Sources: hf_emails hf_urls enron openphish phishtank tranco, 'default' or 'all' "
+             "(default: hf_emails hf_urls). See: python -m util.download --list",
+    )
+    data_grp.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        help="Max records kept per downloaded source, balanced by label; 0 keeps all (default: 20000)",
+    )
+    data_grp.add_argument(
+        "--no-download",
+        action="store_true",
+        help="Never download phishing data automatically when local data is missing",
+    )
     return parser
 
 
@@ -979,6 +1038,27 @@ def main() -> None:
     if args.history:
         from training.dashboard import show_history
         show_history(args.runs_dir, None if args.model == "all" else args.model, args.history_limit, console)
+        return
+
+    if args.download_data is not None:
+        from util.download import DEFAULT_MAX_SAMPLES, download_phishing_data
+        out_dir = args.data_dir / "phishing" / "downloads"
+        try:
+            results = download_phishing_data(
+                out_dir, args.download_data,
+                DEFAULT_MAX_SAMPLES if args.max_samples is None else args.max_samples,
+                console=console,
+            )
+        except ValueError as e:
+            console.print(f"[red]✗ {e}[/red]")
+            sys.exit(2)
+        if not results:
+            console.print("[red]✗ No datasets were downloaded. Check your internet connection.[/red]")
+            sys.exit(1)
+        console.print(
+            f"\n[bold green]✓ Phishing data ready in {out_dir}[/bold green]\n"
+            f"Next: [cyan]python train.py phishing --data-dir {args.data_dir}[/cyan]"
+        )
         return
 
     if args.prepare_data:
@@ -1080,6 +1160,8 @@ def main() -> None:
             config_overrides=phishing_overrides,
             runs_dir=args.runs_dir,
             demo=args.demo,
+            auto_download=not args.no_download,
+            max_samples=args.max_samples,
         )
 
     else:  # "all"

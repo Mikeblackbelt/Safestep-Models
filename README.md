@@ -35,9 +35,11 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-### Step 2: Prepare Data (or use Instant Demo)
+### Step 2: Get Data
 
-You can either use your own datasets or generate ready-to-train sample data with one command:
+**Phishing: nothing to do.** The first time you run `python train.py phishing`, real phishing and legitimate emails and URLs are downloaded from Hugging Face automatically. See [Train the phishing model from scratch](#-train-the-phishing-model-from-scratch) below.
+
+**CART / JAW:** use your own datasets (see the [Data Loader Guide](#-data-loader-guide-simple--flexible)), or generate sample data to try the pipeline:
 
 ```bash
 # Generate sample datasets for CART, JAW, and Phishing in data/
@@ -77,7 +79,100 @@ python train.py all --dashboard
 powershell -ExecutionPolicy Bypass -File train.ps1 help
 ```
 
-Without data, training stops with a "no data found" message; placeholder/synthetic data is only generated with `--demo`. `train.py` exits with status 1 if any requested model fails to train.
+Without data, CART and JAW stop with a "no data found" message; placeholder/synthetic data is only generated with `--demo`. Phishing downloads real data automatically instead (disable with `--no-download`). `train.py` exits with status 1 if any requested model fails to train.
+
+---
+
+## 🎣 Train the phishing model from scratch
+
+You don't need to know the code for this. Run each command from the repo folder.
+
+**1. Install Python 3.10 or newer**, from [python.org](https://www.python.org/downloads/). On Windows, tick "Add python.exe to PATH" in the installer.
+
+**2. Set up the project** (one time only):
+
+```bash
+python -m venv .venv
+# Windows (PowerShell):        .venv\Scripts\activate
+# macOS / Linux / Git Bash:    source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+If PowerShell says running scripts is disabled, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, then activate again.
+
+**3. Train:**
+
+```bash
+python train.py phishing -v
+```
+
+That one command:
+
+1. looks for phishing data in `data/phishing/`;
+2. if it finds none (or only the small sample set), downloads about 40,000 real emails and URLs (around 125 MB) into `data/phishing/downloads/`;
+3. trains all three stages (Attack, Beast, Warhammer) and saves the model to `checkpoints/phishing/`.
+
+The first run also downloads the DistilBERT base model (about 250 MB) for Warhammer. On a CPU, training on the full download takes a few hours. To see how long it will take before you start, run:
+
+```bash
+python train.py phishing --estimate-only
+```
+
+**Faster first run.** To check everything works in a few minutes, use less data and fewer epochs:
+
+```bash
+python train.py phishing -v --data-dir data/quick --max-samples 2000 --epochs-frozen 1 --epochs-finetune 0
+```
+
+With an NVIDIA GPU and a CUDA build of PyTorch, the GPU is used automatically (or force it with `--device cuda`).
+
+**4. Use the model.** Start the API (see [Deployment](docs/deployment.md)); it loads `checkpoints/phishing/` automatically.
+
+### Choosing what to download
+
+You can download data without training. The default is the two Hugging Face sets:
+
+```bash
+python train.py --download-data                    # default: hf_emails hf_urls
+python train.py --download-data all                # every source below
+python train.py --download-data hf_emails enron    # pick sources
+python train.py --download-data --max-samples 0    # keep every record (hf_urls alone is ~800k URLs)
+python -m util.download --list                     # list the sources
+```
+
+Wrappers: `./train.sh download [sources...]` and `.\train.ps1 download [sources...]`.
+
+| Source | What it is | Labels |
+|---|---|---|
+| `hf_emails` (default) | [ealvaradob/phishing-dataset](https://huggingface.co/datasets/ealvaradob/phishing-dataset) emails, Apache-2.0 | both |
+| `hf_urls` (default) | the same dataset's URLs | both |
+| `enron` | [SetFit/enron_spam](https://huggingface.co/datasets/SetFit/enron_spam) spam/ham emails | both |
+| `openphish` | [OpenPhish](https://openphish.com) free live feed | phishing only |
+| `phishtank` | [PhishTank](https://phishtank.com) verified phishing URLs (rate limited) | phishing only |
+| `tranco` | [Tranco](https://tranco-list.eu) top 1M sites, as legitimate URLs | legitimate only |
+
+- `--max-samples N` (default 20000) keeps at most N records **per source**, balanced between the two labels. Lower it for faster training.
+- Downloads are cached: running again reuses them, and `python -m util.download --force` downloads them again.
+- If a source fails (no internet, a site is down), it's skipped and the rest still download.
+- To turn off automatic downloading during training, add `--no-download`.
+- Behind a mirror or for private Hugging Face data, set `HF_ENDPOINT` or `HF_TOKEN`.
+- Check each source's license before commercial use.
+
+### Using your own phishing data
+
+Put any `.csv`, `.tsv`, `.jsonl` or `.json` file anywhere under `data/phishing/`. It needs one text column and one label column:
+
+```csv
+text,label
+"Your account is locked, verify at http://secure-login.example",phishing
+"Lunch moved to 1pm, see you there",legitimate
+```
+
+- Text column names it recognizes: `text`, `body`, `email`, `email text`, `content`, `message`, `url`.
+- Label column names it recognizes: `label`, `class`, `type`, `email type`, `target`, `is_phishing`, `status`, `category`.
+- Labels such as `phishing`, `spam`, `malicious`, `1` count as **phishing**; `legitimate`, `ham`, `safe`, `benign`, `0` count as **legitimate**. Rows with any other label are skipped with a warning.
+
+So Kaggle's "Phishing Email Dataset" CSV (`Email Text`, `Email Type`) works as it is: drop it into `data/phishing/`. Enron-style folders (`enron_spam/spam/*.txt`, `enron_spam/ham/*.txt`), `uci_phishing.data` and `phishtank.csv` are still supported too.
 
 ---
 
