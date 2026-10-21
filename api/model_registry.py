@@ -222,7 +222,8 @@ class SafeStepModelRegistry:
 
         weights_loaded = False
         if ckpt is not None:
-            if (ckpt / "attack.joblib").exists() and (ckpt / "beast.json").exists():
+            attack_exists = (ckpt / "attack.json").exists() or (ckpt / "attack.joblib").exists()
+            if attack_exists and (ckpt / "beast.json").exists():
                 try:
                     detector.load(ckpt)
                     weights_loaded = True
@@ -232,7 +233,7 @@ class SafeStepModelRegistry:
             else:
                 logger.info(
                     f"No complete phishing checkpoint at {ckpt} "
-                    "(needs attack.joblib and beast.json)."
+                    "(needs attack.json or attack.joblib, plus beast.json)."
                 )
 
         self._phishing_detector = detector

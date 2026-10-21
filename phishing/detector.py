@@ -140,14 +140,21 @@ class PhishingDetector:
     def save(self, save_dir: Path) -> None:
         save_dir = Path(save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)
-        self.attack.save(save_dir / "attack.joblib")
+        self.attack.save(save_dir / "attack.json")
         self.beast.save(save_dir / "beast.json")
         if self.warhammer is not None and self.warhammer_ready:
             torch.save(self.warhammer.state_dict(), save_dir / "warhammer.pt")
 
     def load(self, save_dir: Path) -> None:
         save_dir = Path(save_dir)
-        self.attack.load(save_dir / "attack.joblib")
+        attack_json = save_dir / "attack.json"
+        attack_joblib = save_dir / "attack.joblib"
+        if attack_json.exists():
+            self.attack.load(attack_json)
+        elif attack_joblib.exists():
+            self.attack.load(attack_joblib)
+        else:
+            raise FileNotFoundError(f"Neither attack.json nor attack.joblib found in {save_dir}")
         self.beast.load(save_dir / "beast.json")
         warhammer_path = save_dir / "warhammer.pt"
         if self.warhammer is not None and warhammer_path.exists():

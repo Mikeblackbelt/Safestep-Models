@@ -129,6 +129,26 @@ def test_detect_image_json_invalid_url_scheme(client):
     assert "http or https" in resp.json()["detail"]
 
 
+def test_detect_image_json_rejects_ssrf_private_ips(client):
+    """Test POST /api/v1/detect/image/json blocks SSRF attempts against loopback/private IPs."""
+    # Loopback IP
+    resp = client.post("/api/v1/detect/image/json", json={"image_url": "http://127.0.0.1/test.png"})
+    assert resp.status_code == 400
+    assert "forbidden" in resp.json()["detail"].lower()
+
+    # Link-local / Cloud metadata IP
+    resp_meta = client.post("/api/v1/detect/image/json", json={"image_url": "http://169.254.169.254/latest/meta-data"})
+    assert resp_meta.status_code == 400
+    assert "forbidden" in resp_meta.json()["detail"].lower()
+
+
+def test_detect_image_json_rejects_path_outside_project(client):
+    """Test POST /api/v1/detect/image/json rejects paths attempting traversal or probing system directories."""
+    resp = client.post("/api/v1/detect/image/json", json={"image_path": "/etc/passwd"})
+    assert resp.status_code == 400
+    assert "allowed project directory" in resp.json()["detail"]
+
+
 def test_detect_unified(client, sample_assets):
     """Test POST /api/v1/detect/unified."""
     img_path = sample_assets["synthetic"]
@@ -160,6 +180,16 @@ def test_reload_requires_admin_token(client, monkeypatch):
     assert client.post("/models/cart/reload", json={}).status_code == 401
     assert client.post("/models/cart/reload", json={}, headers={"X-Admin-Token": "nope"}).status_code == 401
     assert client.post("/models/cart/reload", json={}, headers={"X-Admin-Token": "s3cret"}).status_code == 200
+
+
+def test_reload_forbidden_in_prod_without_token(client, monkeypatch):
+    """In production mode (mock fallback disabled), unauthenticated reload is strictly forbidden."""
+    from api.config import default_api_config
+    monkeypatch.setattr(default_api_config, "admin_token", None)
+    monkeypatch.setattr(default_api_config, "enable_mock_fallback", False)
+    resp = client.post("/models/cart/reload", json={})
+    assert resp.status_code == 403
+    assert "SAFESTEP_ADMIN_TOKEN" in resp.json()["detail"]
 
 
 def test_reload_rejects_path_outside_checkpoints(client):

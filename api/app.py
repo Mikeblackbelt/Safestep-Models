@@ -87,11 +87,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Enable CORS
+# Enable CORS (allow_credentials is only True when specific non-wildcard origins are configured)
+cors_origins = default_api_config.cors_origins
+allow_credentials = bool(cors_origins and "*" not in cors_origins)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=default_api_config.cors_origins,
-    allow_credentials=True,
+    allow_origins=cors_origins if cors_origins else ["*"],
+    allow_credentials=allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -207,8 +209,16 @@ def reload_model(
     sit under the configured checkpoint directories.
     """
     expected = default_api_config.admin_token
-    if expected and not (x_admin_token and secrets.compare_digest(x_admin_token, expected)):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or missing X-Admin-Token")
+    if expected is not None:
+        if not (x_admin_token and secrets.compare_digest(x_admin_token, expected)):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or missing X-Admin-Token")
+    elif not default_api_config.enable_mock_fallback:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Model reload is disabled in production without SAFESTEP_ADMIN_TOKEN configured.",
+        )
+    else:
+        logger.warning("Unauthenticated model reload accessed in development mode (SAFESTEP_ADMIN_TOKEN is unset).")
 
     path = request.checkpoint_path if request else None
     if path:
@@ -418,7 +428,7 @@ async def detect_image(
         raise
     except Exception as e:
         logger.error(f"Error in detect_image endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid image: {e}")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid image file or corrupted format.")
 
 
 @app.post(
@@ -433,23 +443,109 @@ def detect_image_json(payload: ImageDetectionJsonRequest):
     identifier = "json_image"
 
     if payload.image_path:
-        img_target = payload.image_path
+        import tempfile
+        resolved = Path(payload.image_path).resolve()
+        allowed_roots = [
+            Path.cwd().resolve(),
+            Path("data").resolve(),
+            Path("tests").resolve(),
+            Path(tempfile.gettempdir()).resolve(),
+        ]
+        if not any(resolved.is_relative_to(root) for root in allowed_roots):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="image_path must reside within an allowed project directory",
+            )
+        if not resolved.exists() or not resolved.is_file():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Image file not found: {payload.image_path}",
+            )
+        img_target = str(resolved)
         identifier = payload.image_path
     elif payload.image_base64:
         img_target = payload.image_base64
         identifier = "base64_payload"
     elif payload.image_url:
+        import ipaddress
+        import socket
         import urllib.request
         from urllib.parse import urlparse
+
         parsed = urlparse(payload.image_url)
         if parsed.scheme.lower() not in ("http", "https"):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="image_url must use an http or https scheme",
             )
+        hostname = parsed.hostname
+        if not hostname:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid image_url: missing hostname",
+            )
+
+        lowered_host = hostname.lower()
+        if (
+            lowered_host in ("localhost", "metadata.google.internal")
+            or lowered_host.endswith(".internal")
+            or lowered_host.endswith(".local")
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Access to internal or local resources is forbidden",
+            )
+
+        # Anti-SSRF: verify resolved IP addresses do not point to private or link-local networks
         try:
+            addr_info = socket.getaddrinfo(hostname, None)
+            for entry in addr_info:
+                ip = ipaddress.ip_address(entry[4][0])
+                if (
+                    ip.is_private
+                    or ip.is_loopback
+                    or ip.is_link_local
+                    or ip.is_reserved
+                    or ip.is_multicast
+                    or ip.is_unspecified
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Access to private or local network IP addresses is forbidden",
+                    )
+        except HTTPException:
+            raise
+        except socket.gaierror as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Could not resolve host for image_url: {e}",
+            )
+
+        class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                new_parsed = urlparse(newurl)
+                if new_parsed.scheme.lower() not in ("http", "https") or not new_parsed.hostname:
+                    raise urllib.error.HTTPError(newurl, code, "Redirect to invalid target forbidden", headers, fp)
+                try:
+                    for entry in socket.getaddrinfo(new_parsed.hostname, None):
+                        ip = ipaddress.ip_address(entry[4][0])
+                        if (
+                            ip.is_private
+                            or ip.is_loopback
+                            or ip.is_link_local
+                            or ip.is_reserved
+                            or ip.is_multicast
+                            or ip.is_unspecified
+                        ):
+                            raise urllib.error.HTTPError(newurl, code, "Redirect to private IP forbidden", headers, fp)
+                except Exception:
+                    raise urllib.error.HTTPError(newurl, code, "Redirect host resolution failed", headers, fp)
+                return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+        try:
+            opener = urllib.request.build_opener(SafeRedirectHandler)
             req = urllib.request.Request(payload.image_url, headers={"User-Agent": "SafeStep-API/1.0"})
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with opener.open(req, timeout=10) as resp:
                 max_bytes = default_api_config.max_upload_size_bytes
                 chunks = []
                 bytes_read = 0
@@ -485,11 +581,13 @@ def detect_image_json(payload: ImageDetectionJsonRequest):
             threshold=payload.threshold,
             source_identifiers=[identifier],
         )
+    except HTTPException:
+        raise
     except ModelUnavailableError:
         raise
     except Exception as e:
         logger.error(f"Error in detect_image_json endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid image payload or could not process image")
 
 
 @app.post(

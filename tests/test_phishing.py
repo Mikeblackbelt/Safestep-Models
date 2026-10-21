@@ -82,7 +82,7 @@ def test_predict_rejects_unknown_stage(shallow_trainer):
 
 def test_shallow_save_load_roundtrip(shallow_trainer, tmp_path):
     shallow_trainer.detector.save(tmp_path)
-    assert (tmp_path / "attack.joblib").exists()
+    assert (tmp_path / "attack.json").exists()
     assert (tmp_path / "beast.json").exists()
     assert not (tmp_path / "warhammer.pt").exists()
 

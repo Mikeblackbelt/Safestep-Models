@@ -13,6 +13,9 @@ from PIL import Image
 
 from jaw.config import JAWConfig
 
+# Defense against pixel flood / decompression bomb attacks
+MAX_IMAGE_PIXELS = 25_000_000  # 25 Megapixels
+
 
 class JAWPreprocessor:
     """Loads images and prepares both spatial (tensor) and raw (array) forms."""
@@ -23,7 +26,12 @@ class JAWPreprocessor:
         self.std = torch.tensor(config.norm_std).view(3, 1, 1)
 
     def load(self, path: Union[str, Path]) -> Image.Image:
-        return Image.open(path).convert("RGB")
+        img = Image.open(path)
+        if img.width * img.height > MAX_IMAGE_PIXELS:
+            raise ValueError(
+                f"Image dimensions ({img.width}x{img.height}) exceed maximum allowed pixels ({MAX_IMAGE_PIXELS})."
+            )
+        return img.convert("RGB")
 
     def to_model_inputs(self, images: List[Image.Image]) -> Tuple[torch.Tensor, List[np.ndarray]]:
         """
@@ -41,6 +49,10 @@ class JAWPreprocessor:
         raw_arrays = []
 
         for img in images:
+            if img.width * img.height > MAX_IMAGE_PIXELS:
+                raise ValueError(
+                    f"Image dimensions ({img.width}x{img.height}) exceed maximum allowed pixels ({MAX_IMAGE_PIXELS})."
+                )
             resized = img.resize((size, size))
             raw_arrays.append(np.array(resized))
 

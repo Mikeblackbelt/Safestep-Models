@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class TextDetectionRequest(BaseModel):
     """Input payload for a single text detection query."""
-    text: str = Field(..., min_length=1, description="Raw text to analyze for AI generation signals")
+    text: str = Field(..., min_length=1, max_length=100000, description="Raw text to analyze for AI generation signals")
     threshold: Optional[float] = Field(None, ge=0.0, le=1.0, description="Optional override for decision threshold")
 
     model_config = ConfigDict(
@@ -27,7 +27,7 @@ class TextDetectionRequest(BaseModel):
 
 class BatchTextDetectionRequest(BaseModel):
     """Input payload for batch text detection."""
-    texts: List[str] = Field(..., min_length=1, description="List of raw texts to analyze")
+    texts: List[str] = Field(..., min_length=1, max_length=128, description="List of raw texts to analyze")
     threshold: Optional[float] = Field(None, ge=0.0, le=1.0, description="Optional override for decision threshold")
 
     model_config = ConfigDict(
@@ -68,9 +68,9 @@ class BatchTextDetectionResponse(BaseModel):
 
 class ImageDetectionJsonRequest(BaseModel):
     """Input payload for image detection via JSON (path, base64, or URL)."""
-    image_path: Optional[str] = Field(None, description="Local filesystem path to an image file")
-    image_base64: Optional[str] = Field(None, description="Base64-encoded image bytes")
-    image_url: Optional[str] = Field(None, description="URL pointing to an image to fetch and analyze")
+    image_path: Optional[str] = Field(None, max_length=2048, description="Local filesystem path to an image file")
+    image_base64: Optional[str] = Field(None, max_length=35000000, description="Base64-encoded image bytes")
+    image_url: Optional[str] = Field(None, max_length=2048, description="URL pointing to an image to fetch and analyze")
     threshold: Optional[float] = Field(None, ge=0.0, le=1.0, description="Optional override for decision threshold")
 
     model_config = ConfigDict(
@@ -107,7 +107,7 @@ class BatchImageDetectionResponse(BaseModel):
 
 class PhishingDetectionRequest(BaseModel):
     """Input payload for a single phishing detection query."""
-    text: str = Field(..., min_length=1, description="Email body, URL, or page text")
+    text: str = Field(..., min_length=1, max_length=100000, description="Email body, URL, or page text")
     threshold: Optional[float] = Field(None, ge=0.0, le=1.0, description="Optional override for decision threshold")
     max_stage: str = Field("warhammer", pattern="^(attack|beast|warhammer)$", description="Stop escalating after this stage")
 
@@ -124,7 +124,7 @@ class PhishingDetectionRequest(BaseModel):
 
 class BatchPhishingDetectionRequest(BaseModel):
     """Input payload for batch phishing detection."""
-    texts: List[str] = Field(..., min_length=1, description="List of emails / URLs / page texts")
+    texts: List[str] = Field(..., min_length=1, max_length=128, description="List of emails / URLs / page texts")
     threshold: Optional[float] = Field(None, ge=0.0, le=1.0, description="Optional override for decision threshold")
     max_stage: str = Field("warhammer", pattern="^(attack|beast|warhammer)$", description="Stop escalating after this stage")
 

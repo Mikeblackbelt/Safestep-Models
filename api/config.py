@@ -17,7 +17,7 @@ class APIConfig:
     port: int = 8000
     debug: bool = False
     workers: int = 1
-    cors_origins: List[str] = field(default_factory=lambda: ["*"])
+    cors_origins: List[str] = field(default_factory=list)
 
     # Device configuration: 'auto', 'cpu', 'cuda', etc.
     device: str = "auto"
