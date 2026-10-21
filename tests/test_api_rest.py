@@ -134,12 +134,12 @@ def test_detect_image_json_rejects_ssrf_private_ips(client):
     # Loopback IP
     resp = client.post("/api/v1/detect/image/json", json={"image_url": "http://127.0.0.1/test.png"})
     assert resp.status_code == 400
-    assert "forbidden" in resp.json()["detail"].lower()
+    assert "prohibited" in resp.json()["detail"].lower() or "forbidden" in resp.json()["detail"].lower()
 
     # Link-local / Cloud metadata IP
     resp_meta = client.post("/api/v1/detect/image/json", json={"image_url": "http://169.254.169.254/latest/meta-data"})
     assert resp_meta.status_code == 400
-    assert "forbidden" in resp_meta.json()["detail"].lower()
+    assert "prohibited" in resp_meta.json()["detail"].lower() or "forbidden" in resp_meta.json()["detail"].lower()
 
 
 def test_detect_image_json_rejects_path_outside_project(client):
@@ -319,3 +319,74 @@ def test_sdk_predict_phishing(phishing_client):
         assert single.model == "Phishing"
         batch = sdk_client.predict_phishing(["a", "b"], max_stage="attack")
         assert len(batch) == 2
+
+
+def test_detect_text_rejects_ssrf_urls(client):
+    """Test POST /api/v1/detect/text rejects SSRF attempts with private or link-local URLs."""
+    # Loopback
+    resp = client.post("/api/v1/detect/text", json={"url": "http://127.0.0.1:8000/health"})
+    assert resp.status_code == 400
+    assert "prohibited" in resp.json()["detail"].lower()
+
+    # Cloud metadata
+    resp_meta = client.post("/api/v1/detect/text", json={"url": "http://169.254.169.254/latest/meta-data"})
+    assert resp_meta.status_code == 400
+    assert "prohibited" in resp_meta.json()["detail"].lower()
+
+
+def test_detect_phishing_rejects_ssrf_urls(client):
+    """Test POST /api/v1/detect/phishing rejects SSRF attempts."""
+    resp = client.post("/api/v1/detect/phishing", json={"url": "http://10.0.0.1/intranet"})
+    assert resp.status_code == 400
+    assert "prohibited" in resp.json()["detail"].lower()
+
+
+def test_detect_text_with_mocked_external_url(client, monkeypatch):
+    """Test POST /api/v1/detect/text successfully prompts CART with external URL text."""
+    import api.security
+
+    def fake_fetch_text(url, max_chars=100000, max_bytes=5000000):
+        return "This is a comprehensive article about artificial intelligence and generative models."
+
+    monkeypatch.setattr(api.security, "fetch_external_text", fake_fetch_text)
+    resp = client.post("/api/v1/detect/text", json={"url": "https://example.com/ai-article"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["model"] == "CART"
+    assert "artificial intelligence" in data["text"]
+    assert 0.0 <= data["p_ai"] <= 1.0
+
+
+def test_detect_phishing_with_mocked_external_url(phishing_client, monkeypatch):
+    """Test POST /api/v1/detect/phishing successfully prompts phishing pipeline with external URL."""
+    import api.security
+
+    def fake_fetch_text(url, max_chars=100000, max_bytes=5000000):
+        return "Please enter your password and banking PIN to continue."
+
+    monkeypatch.setattr(api.security, "fetch_external_text", fake_fetch_text)
+    resp = phishing_client.post("/api/v1/detect/phishing", json={"url": "https://example.com/login"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["model"] == "Phishing"
+    assert "password" in data["text"]
+
+
+def test_detect_unified_json_endpoint(client, sample_assets, monkeypatch):
+    """Test POST /api/v1/detect/unified/json with external data and local image."""
+    import api.security
+
+    def fake_fetch_text(url, max_chars=100000, max_bytes=5000000):
+        return "Breaking news: groundbreaking scientific experiment proves new physics theory."
+
+    monkeypatch.setattr(api.security, "fetch_external_text", fake_fetch_text)
+    payload = {
+        "text_url": "https://example.com/news",
+        "image_path": str(sample_assets["synthetic"]),
+    }
+    resp = client.post("/api/v1/detect/unified/json", json=payload)
+    assert resp.status_code == 200
+    result = resp.json()
+    assert result["text_result"] is not None
+    assert result["image_result"] is not None
+    assert result["overall_risk"] in ("HIGH", "MEDIUM", "LOW")

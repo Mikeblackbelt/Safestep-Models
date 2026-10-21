@@ -11,14 +11,16 @@ from pydantic import BaseModel, ConfigDict, Field
 # ---------------------------------------------------------------------------
 
 class TextDetectionRequest(BaseModel):
-    """Input payload for a single text detection query."""
-    text: str = Field(..., min_length=1, max_length=100000, description="Raw text to analyze for AI generation signals")
+    """Input payload for a single text detection query (direct text or external URL)."""
+    text: Optional[str] = Field(None, min_length=1, max_length=100000, description="Raw text to analyze for AI generation signals")
+    url: Optional[str] = Field(None, max_length=2048, description="External URL to fetch text content from securely")
     threshold: Optional[float] = Field(None, ge=0.0, le=1.0, description="Optional override for decision threshold")
 
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
                 "text": "The rapid advancement of deep neural networks has led to profound breakthroughs in AI.",
+                "url": "https://example.com/sample-article",
                 "threshold": 0.5,
             }
         }
@@ -106,8 +108,9 @@ class BatchImageDetectionResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 class PhishingDetectionRequest(BaseModel):
-    """Input payload for a single phishing detection query."""
-    text: str = Field(..., min_length=1, max_length=100000, description="Email body, URL, or page text")
+    """Input payload for a single phishing detection query (direct text or external URL)."""
+    text: Optional[str] = Field(None, min_length=1, max_length=100000, description="Email body, URL, or page text")
+    url: Optional[str] = Field(None, max_length=2048, description="External URL whose live content will be fetched securely and analyzed for phishing")
     threshold: Optional[float] = Field(None, ge=0.0, le=1.0, description="Optional override for decision threshold")
     max_stage: str = Field("warhammer", pattern="^(attack|beast|warhammer)$", description="Stop escalating after this stage")
 
@@ -115,6 +118,7 @@ class PhishingDetectionRequest(BaseModel):
         json_schema_extra={
             "example": {
                 "text": "Your account is locked. Verify now at http://secure-login.example.ru/verify",
+                "url": "https://example.com/login",
                 "threshold": 0.5,
                 "max_stage": "warhammer",
             }
@@ -164,6 +168,19 @@ class UnifiedDetectionResponse(BaseModel):
     risk_score: float = Field(..., ge=0.0, le=1.0, description="Composite synthetic content risk score")
     summary: str = Field(..., description="Human-readable assessment summary")
     latency_ms: float
+
+
+class UnifiedDetectionJsonRequest(BaseModel):
+    """Input payload for multimodal analysis via JSON (allowing external data URLs)."""
+    text: Optional[str] = Field(None, max_length=100000, description="Optional raw text content")
+    text_url: Optional[str] = Field(None, max_length=2048, description="Optional external URL to fetch text from")
+    image_path: Optional[str] = Field(None, max_length=2048, description="Optional local filesystem image path")
+    image_url: Optional[str] = Field(None, max_length=2048, description="Optional external image URL")
+    image_base64: Optional[str] = Field(None, max_length=35000000, description="Optional base64 image data")
+    text_threshold: Optional[float] = Field(None, ge=0.0, le=1.0)
+    image_threshold: Optional[float] = Field(None, ge=0.0, le=1.0)
+    phishing_threshold: Optional[float] = Field(None, ge=0.0, le=1.0)
+    include_phishing: bool = Field(True, description="Also run the phishing pipeline on the text")
 
 
 # ---------------------------------------------------------------------------

@@ -33,16 +33,18 @@ class SafeStepClient:
     ):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self._owned_client = client is None
         if client is not None:
             self._client = client
         else:
             self._client = httpx.Client(base_url=self.base_url, timeout=timeout)
 
     def close(self):
-        try:
-            self._client.close()
-        except Exception:
-            pass
+        if getattr(self, "_owned_client", True):
+            try:
+                self._client.close()
+            except Exception:
+                pass
 
     def __enter__(self):
         return self
@@ -71,12 +73,13 @@ class SafeStepClient:
 
     def predict_text(
         self,
-        text: Union[str, List[str]],
+        text: Optional[Union[str, List[str]]] = None,
+        url: Optional[str] = None,
         threshold: Optional[float] = None,
         include_features: bool = False,
     ) -> Union[TextDetectionResult, List[TextDetectionResult]]:
         """
-        Detect whether text is AI-generated (single string or list).
+        Detect whether text is AI-generated (single string, list, or external URL).
         """
         if isinstance(text, list):
             payload = {"texts": text, "threshold": threshold}
@@ -85,7 +88,7 @@ class SafeStepClient:
             batch_data = BatchTextDetectionResponse(**resp.json())
             return batch_data.results
         else:
-            payload = {"text": text, "threshold": threshold}
+            payload = {"text": text, "url": url, "threshold": threshold}
             params = {"include_features": include_features} if include_features else {}
             resp = self._client.post("/api/v1/detect/text", json=payload, params=params)
             resp.raise_for_status()
@@ -93,19 +96,20 @@ class SafeStepClient:
 
     def predict_phishing(
         self,
-        text: Union[str, List[str]],
+        text: Optional[Union[str, List[str]]] = None,
+        url: Optional[str] = None,
         threshold: Optional[float] = None,
         max_stage: str = "warhammer",
     ) -> Union[PhishingDetectionResult, List[PhishingDetectionResult]]:
         """
-        Detect whether an email / URL / page text is phishing (single string or list).
+        Detect whether an email / URL / page text is phishing (single string, list, or external URL).
         """
         if isinstance(text, list):
             payload = {"texts": text, "threshold": threshold, "max_stage": max_stage}
             resp = self._client.post("/api/v1/detect/phishing/batch", json=payload)
             resp.raise_for_status()
             return BatchPhishingDetectionResponse(**resp.json()).results
-        payload = {"text": text, "threshold": threshold, "max_stage": max_stage}
+        payload = {"text": text, "url": url, "threshold": threshold, "max_stage": max_stage}
         resp = self._client.post("/api/v1/detect/phishing", json=payload)
         resp.raise_for_status()
         return PhishingDetectionResult(**resp.json())
@@ -141,15 +145,21 @@ class SafeStepClient:
         self,
         text: Optional[str] = None,
         image: Optional[Union[str, Path, bytes]] = None,
+        text_url: Optional[str] = None,
+        image_url: Optional[str] = None,
         text_threshold: Optional[float] = None,
         image_threshold: Optional[float] = None,
     ) -> UnifiedDetectionResponse:
         """
-        Analyze both text and image simultaneously.
+        Analyze both text and image simultaneously (supports local or external URLs).
         """
         data = {}
         if text:
             data["text"] = text
+        if text_url:
+            data["text_url"] = text_url
+        if image_url:
+            data["image_url"] = image_url
         if text_threshold is not None:
             data["text_threshold"] = str(text_threshold)
         if image_threshold is not None:

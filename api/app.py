@@ -43,8 +43,10 @@ from api.schemas import (
     ReloadModelRequest,
     TextDetectionRequest,
     TextDetectionResult,
+    UnifiedDetectionJsonRequest,
     UnifiedDetectionResponse,
 )
+from api import security
 from api.service import service
 
 # Configure logging
@@ -284,22 +286,33 @@ def detect_text(
     include_features: bool = Query(False, description="Include extracted heuristic feature values"),
 ):
     """
-    Run CART pipeline on a single text string:
+    Run CART pipeline on a single text string or securely fetched external URL:
     - DistilBERT neural classification
     - Stylistic heuristic extraction (repetition, burstiness, punctuation)
     - XGBoost meta-classifier fusion
     """
+    target_text = payload.text
+    if payload.url:
+        target_text = security.fetch_external_text(payload.url)
+    elif not target_text:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Must provide either 'text' or 'url' to analyze.",
+        )
+
     try:
         return service.predict_text(
-            texts=payload.text,
+            texts=target_text,
             threshold=payload.threshold,
             include_features=include_features,
         )
     except ModelUnavailableError:
         raise
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error in detect_text endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error during text detection.")
 
 
 @app.post(
@@ -342,18 +355,32 @@ def detect_batch_text(payload: BatchTextDetectionRequest):
     tags=["Phishing Detection"],
 )
 def detect_phishing(payload: PhishingDetectionRequest):
-    """Run the Attack -> Beast -> Warhammer escalation pipeline on a single text."""
+    """
+    Run the Attack -> Beast -> Warhammer escalation pipeline on text or a live external URL.
+    """
+    target_text = payload.text
+    if payload.url:
+        fetched = security.fetch_external_text(payload.url)
+        target_text = f"{payload.url}\n\n{fetched}" if not target_text else f"{target_text}\n\n{payload.url}\n\n{fetched}"
+    elif not target_text:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Must provide either 'text' or 'url' to analyze.",
+        )
+
     try:
         return service.predict_phishing(
-            texts=payload.text,
+            texts=target_text,
             threshold=payload.threshold,
             max_stage=payload.max_stage,
         )
     except ModelUnavailableError:
         raise
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error in detect_phishing endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error during phishing detection.")
 
 
 @app.post(
@@ -467,108 +494,11 @@ def detect_image_json(payload: ImageDetectionJsonRequest):
         img_target = payload.image_base64
         identifier = "base64_payload"
     elif payload.image_url:
-        import ipaddress
-        import socket
-        import urllib.request
-        from urllib.parse import urlparse
-
-        parsed = urlparse(payload.image_url)
-        if parsed.scheme.lower() not in ("http", "https"):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="image_url must use an http or https scheme",
-            )
-        hostname = parsed.hostname
-        if not hostname:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid image_url: missing hostname",
-            )
-
-        lowered_host = hostname.lower()
-        if (
-            lowered_host in ("localhost", "metadata.google.internal")
-            or lowered_host.endswith(".internal")
-            or lowered_host.endswith(".local")
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Access to internal or local resources is forbidden",
-            )
-
-        # Anti-SSRF: verify resolved IP addresses do not point to private or link-local networks
-        try:
-            addr_info = socket.getaddrinfo(hostname, None)
-            for entry in addr_info:
-                ip = ipaddress.ip_address(entry[4][0])
-                if (
-                    ip.is_private
-                    or ip.is_loopback
-                    or ip.is_link_local
-                    or ip.is_reserved
-                    or ip.is_multicast
-                    or ip.is_unspecified
-                ):
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="Access to private or local network IP addresses is forbidden",
-                    )
-        except HTTPException:
-            raise
-        except socket.gaierror as e:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Could not resolve host for image_url: {e}",
-            )
-
-        class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
-            def redirect_request(self, req, fp, code, msg, headers, newurl):
-                new_parsed = urlparse(newurl)
-                if new_parsed.scheme.lower() not in ("http", "https") or not new_parsed.hostname:
-                    raise urllib.error.HTTPError(newurl, code, "Redirect to invalid target forbidden", headers, fp)
-                try:
-                    for entry in socket.getaddrinfo(new_parsed.hostname, None):
-                        ip = ipaddress.ip_address(entry[4][0])
-                        if (
-                            ip.is_private
-                            or ip.is_loopback
-                            or ip.is_link_local
-                            or ip.is_reserved
-                            or ip.is_multicast
-                            or ip.is_unspecified
-                        ):
-                            raise urllib.error.HTTPError(newurl, code, "Redirect to private IP forbidden", headers, fp)
-                except Exception:
-                    raise urllib.error.HTTPError(newurl, code, "Redirect host resolution failed", headers, fp)
-                return super().redirect_request(req, fp, code, msg, headers, newurl)
-
-        try:
-            opener = urllib.request.build_opener(SafeRedirectHandler)
-            req = urllib.request.Request(payload.image_url, headers={"User-Agent": "SafeStep-API/1.0"})
-            with opener.open(req, timeout=10) as resp:
-                max_bytes = default_api_config.max_upload_size_bytes
-                chunks = []
-                bytes_read = 0
-                while True:
-                    chunk = resp.read(65536)
-                    if not chunk:
-                        break
-                    bytes_read += len(chunk)
-                    if bytes_read > max_bytes:
-                        raise HTTPException(
-                            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                            detail=f"Image from URL exceeds limit of {max_bytes // (1024 * 1024)}MB",
-                        )
-                    chunks.append(chunk)
-                img_target = b"".join(chunks)
-            identifier = payload.image_url
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Failed to fetch image from URL: {e}",
-            )
+        img_target = security.fetch_external_image(
+            payload.image_url,
+            max_bytes=default_api_config.max_upload_size_bytes,
+        )
+        identifier = payload.image_url
     else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -648,6 +578,8 @@ async def detect_batch_images(
 async def detect_unified(
     text: Optional[str] = Form(None, description="Optional text content to analyze"),
     file: Optional[UploadFile] = File(None, description="Optional image file to analyze"),
+    text_url: Optional[str] = Form(None, description="Optional external URL to fetch text from"),
+    image_url: Optional[str] = Form(None, description="Optional external URL to fetch image from"),
     text_threshold: Optional[float] = Form(None),
     image_threshold: Optional[float] = Form(None),
     phishing_threshold: Optional[float] = Form(None),
@@ -656,20 +588,27 @@ async def detect_unified(
     """
     Combined inspection for content containing both text and visual media.
     Produces individual verdicts and a synthesized overall synthetic content risk rating.
+    Supports direct uploads or secure external URL fetching.
     """
-    if not text and file is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Must provide at least one of 'text' or 'file' for unified analysis.",
-        )
+    target_text = text
+    if not target_text and text_url:
+        target_text = security.fetch_external_text(text_url)
 
     image_content = None
     if file is not None:
         image_content = await file.read()
+    elif image_url:
+        image_content = security.fetch_external_image(image_url, max_bytes=default_api_config.max_upload_size_bytes)
+
+    if not target_text and image_content is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Must provide text (or 'text_url') or image file (or 'image_url') for unified analysis.",
+        )
 
     try:
         return service.predict_unified(
-            text=text,
+            text=target_text,
             image=image_content,
             text_threshold=text_threshold,
             image_threshold=image_threshold,
@@ -678,6 +617,76 @@ async def detect_unified(
         )
     except ModelUnavailableError:
         raise
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error in detect_unified endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error during unified detection.")
+
+
+@app.post(
+    "/api/v1/detect/unified/json",
+    response_model=UnifiedDetectionResponse,
+    summary="Unified multimodal analysis via JSON (allowing external data URLs)",
+    tags=["Multimodal Unified Detection"],
+)
+def detect_unified_json(payload: UnifiedDetectionJsonRequest):
+    """
+    Combined inspection for content via JSON payload, supporting external URLs,
+    base64, local image paths, and raw text.
+    """
+    target_text = payload.text
+    if not target_text and payload.text_url:
+        target_text = security.fetch_external_text(payload.text_url)
+
+    image_target = None
+    if payload.image_path:
+        import tempfile
+        resolved = Path(payload.image_path).resolve()
+        allowed_roots = [
+            Path.cwd().resolve(),
+            Path("data").resolve(),
+            Path("tests").resolve(),
+            Path(tempfile.gettempdir()).resolve(),
+        ]
+        if not any(resolved.is_relative_to(root) for root in allowed_roots):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="image_path must reside within an allowed project directory",
+            )
+        if not resolved.exists() or not resolved.is_file():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Image file not found: {payload.image_path}",
+            )
+        image_target = str(resolved)
+    elif payload.image_base64:
+        image_target = payload.image_base64
+    elif payload.image_url:
+        image_target = security.fetch_external_image(
+            payload.image_url,
+            max_bytes=default_api_config.max_upload_size_bytes,
+        )
+
+    if not target_text and not image_target:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Must provide text/text_url or image (path, base64, url) for unified analysis.",
+        )
+
+    try:
+        return service.predict_unified(
+            text=target_text,
+            image=image_target,
+            text_threshold=payload.text_threshold,
+            image_threshold=payload.image_threshold,
+            phishing_threshold=payload.phishing_threshold,
+            include_phishing=payload.include_phishing,
+        )
+    except ModelUnavailableError:
+        raise
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in detect_unified_json endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error during unified detection.")
