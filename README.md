@@ -15,7 +15,7 @@ Phishing samples only escalate to the next, more expensive stage while `p(phishi
 - [Training & Mathematical Foundations](docs/training.md): verbose breakdown of multi-stage training pipelines (AdamW, Cosine Annealing, linear warmup, gradient clipping), heuristic & frequency feature extraction math, XGBoost meta-fusion, confidence escalation gating, 5-fold CV, and ANOVA significance testing
 - [Architecture & System Design](docs/architecture.md): model designs, tensor transformations, layer dimension accounting, structural data flow, and zero-downtime hot reloading
 - [Newcomer's Guide](docs/newcomer_guide.md): quickstart onboarding, 5-fold cross-validation, AUROC Riemann sums, external benchmarks, and statistical testing
-- [Deployment & API Operations](docs/deployment.md): running the FastAPI service, complete REST endpoint reference, Docker containerization, and production hardening
+- [Deployment & Cloud Hosting Guide](docs/deployment.md): complete REST endpoint reference, Docker containerization, cloud service pricing matrix (Free, Budget VPS, High-Performance GPU), and step-by-step production deployment walkthroughs
 
 ---
 

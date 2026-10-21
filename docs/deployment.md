@@ -1,4 +1,4 @@
-# SafeStep Deployment: Production Architecture, API Reference & Operations
+# SafeStep Deployment: Production Architecture, API Reference & Cloud Operations
 
 SafeStep ships a production-ready, asynchronous HTTP microservice built on **FastAPI** (`api/app.py`) and backed by an in-memory **Model Registry** (`api/model_registry.py`). It serves real-time inferences for **CART** (AI text), **JAW** (AI images), and the **Phishing** escalation cascade (Attack $\rightarrow$ Beast $\rightarrow$ Warhammer), as well as a unified multimodal threat evaluator.
 
@@ -6,7 +6,7 @@ SafeStep ships a production-ready, asynchronous HTTP microservice built on **Fas
 
 ## Table of Contents
 - [1. Service Architecture & Component Overview](#1-service-architecture--component-overview)
-- [2. Running the API](#2-running-the-api)
+- [2. Running the API Locally](#2-running-the-api-locally)
   - [2.1 CLI Server Runner](#21-cli-server-runner)
   - [2.2 Direct Uvicorn Execution](#22-direct-uvicorn-execution)
 - [3. Complete REST API Endpoint Reference](#3-complete-rest-api-endpoint-reference)
@@ -19,6 +19,14 @@ SafeStep ships a production-ready, asynchronous HTTP microservice built on **Fas
 - [5. Zero-Downtime Checkpoint Hot-Reloading](#5-zero-downtime-checkpoint-hot-reloading)
 - [6. Docker Containerization & Orchestration](#6-docker-containerization--orchestration)
 - [7. Production Reverse Proxy & Security Hardening](#7-production-reverse-proxy--security-hardening)
+- [8. Hardware Resource Requirements & Sizing Guide](#8-hardware-resource-requirements--sizing-guide)
+- [9. Cloud Services & Pricing Matrix (Free, Cheap, High Performance)](#9-cloud-services--pricing-matrix-free-cheap-high-performance)
+- [10. Step-by-Step Cloud Deployment Walkthroughs](#10-step-by-step-cloud-deployment-walkthroughs)
+  - [10.1 Free Tier: Hugging Face Spaces (Docker Space)](#101-free-tier-hugging-face-spaces-docker-space)
+  - [10.2 Serverless Tier: Google Cloud Run (Free / Pay-Per-Request)](#102-serverless-tier-google-cloud-run-free--pay-per-request)
+  - [10.3 Budget VPS Tier: Hetzner / DigitalOcean (Docker Compose + SSL)](#103-budget-vps-tier-hetzner--digitalocean-docker-compose--ssl)
+  - [10.4 High-Performance GPU Tier: RunPod / Lambda / AWS G5 (CUDA)](#104-high-performance-gpu-tier-runpod--lambda--aws-g5-cuda)
+- [11. Production Operational Best Practices & Optimization](#11-production-operational-best-practices--optimization)
 
 ---
 
@@ -72,7 +80,7 @@ The service is decoupled into distinct architectural layers:
 
 ---
 
-## 2. Running the API
+## 2. Running the API Locally
 
 ### 2.1 CLI Server Runner
 The easiest way to launch the server is through the `api.cli` module:
@@ -428,3 +436,244 @@ server {
     }
 }
 ```
+
+---
+
+## 8. Hardware Resource Requirements & Sizing Guide
+
+SafeStep detectors are engineered to be lightweight and operational across diverse environments—from micro virtual machines to multi-GPU clusters.
+
+### Resource Footprint per Detector
+
+| Model | Component Breakdown | Active RAM | VRAM (if GPU) | Latency (CPU) | Latency (GPU) | Throughput (per vCPU) |
+|---|---|---|---|---|---|---|
+| **CART** | DistilBERT (66M params) + MLP + XGBoost | $\sim 450$ MB | $\sim 800$ MB | $15\text{--}35$ ms | $3\text{--}8$ ms | $30\text{--}50$ req/s |
+| **JAW** | EfficientNet-B3 (10.7M) + 26-d FFT/Gabor + MLP | $\sim 600$ MB | $\sim 1.1$ GB | $40\text{--}90$ ms | $8\text{--}15$ ms | $15\text{--}25$ req/s |
+| **Phishing** | Attack ($<0.5$ ms) $\rightarrow$ Beast ($2$ ms) $\rightarrow$ Warhammer | $\sim 400$ MB | $\sim 800$ MB | $2\text{--}30$ ms | $1\text{--}6$ ms | $200\text{--}500$ req/s |
+| **Unified** | All 3 models loaded simultaneously | $\sim 1.4\text{--}1.8$ GB | $\sim 2.2$ GB | $50\text{--}110$ ms | $10\text{--}20$ ms | $10\text{--}20$ req/s |
+
+### Hardware Sizing Recommendations
+
+| Target Workload | Minimum CPU | Minimum RAM | Recommended Storage | Recommended Device |
+|---|---|---|---|---|
+| **Development / Testing** | 2 vCPU | 2 GB | 10 GB SSD | CPU |
+| **Light Production ($<10$ req/sec)** | 2 vCPU | 4 GB | 20 GB SSD | CPU |
+| **Standard Production ($10\text{--}80$ req/sec)** | 4 vCPU | 8 GB | 40 GB NVMe | CPU (or budget GPU) |
+| **High Throughput ($>100$ req/sec)** | 8+ vCPU | 16 GB | 80 GB NVMe | Dedicated GPU (A10G / L4 / RTX 4090) |
+
+---
+
+## 9. Cloud Services & Pricing Matrix (Free, Cheap, High Performance)
+
+Depending on your budget, latency SLA, and anticipated traffic volume, SafeStep can be hosted on a variety of battle-tested cloud providers across three pricing tiers:
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                                 SafeStep Cloud Spectrum                                │
+├────────────────────────┬───────────────────────────────┬───────────────────────────────┤
+│    Tier 1: Free Tier   │     Tier 2: Budget VPS        │    Tier 3: High Performance   │
+│       ($0 / month)     │     ($5 – $35 / month)        │     ($50 – $300+ / month)     │
+├────────────────────────┼───────────────────────────────┼───────────────────────────────┤
+│ • Hugging Face Spaces  │ • Hetzner Cloud (CPX21/31)    │ • RunPod Secure Cloud (A10G)  │
+│ • Oracle Always Free   │ • DigitalOcean / Linode       │ • AWS ECS / EKS (g5.xlarge)   │
+│ • Google Cloud Run     │ • AWS Lightsail / EC2 Graviton│ • GCP Cloud Run with L4 GPU   │
+│ • Render Free Service  │ • RunPod Community Cloud (GPU)│ • Dedicated Bare Metal Server │
+└────────────────────────┴───────────────────────────────┴───────────────────────────────┘
+```
+
+### Comprehensive Pricing & Provider Comparison
+
+| Provider & Service | Pricing Model | Included Specs | Strengths | Limitations | Best Suited For |
+|---|---|---|---|---|---|
+| **Hugging Face Spaces** | **Free ($0/mo)** | 2 vCPU, 16 GB RAM, 50 GB disk | 16 GB RAM at zero cost, free HTTPS & Git-push deploy | Sleeps after 48h idle, CPU only | Public demo, portfolio, staging testing |
+| **Oracle Cloud Always Free** | **Free ($0/mo)** | Up to 4 ARM OCPUs, 24 GB RAM, 200 GB disk | 24/7 uptime without sleep, massive 24GB RAM | Strict sign-up verification, requires ARM Docker build | Non-profit 24/7 production, student labs |
+| **Google Cloud Run (Free Tier)** | **Free ($0/mo)** | 2M requests/mo, 360k GB-sec free | Pay-only-for-traffic, scales to 0, Google edge routing | Cold-starts on zero traffic ($\sim 5\text{--}8$s) | Sporadic or bursty API traffic |
+| **Render Free Tier** | **Free ($0/mo)** | 0.5 CPU, 512 MB RAM | Dead simple setup | Low RAM (only suitable for single model CART) | Quick toy testing |
+| **Hetzner Cloud (CPX21/CPX31)** | **Cheap (~$6 – $16/mo)** | 3 to 4 AMD vCPU, 4 to 8 GB RAM, 80-160 GB NVMe | **Unbeatable cost-to-performance**, high CPU clock speed, 20TB egress | Self-managed Linux VM (requires basic DevOps) | **Production recommendation for budget startups** |
+| **DigitalOcean Droplets** | **Cheap ($6 – $24/mo)** | 1 to 2 vCPU, 1 to 4 GB RAM, 25-80 GB SSD | 1-click Docker marketplace, global datacenters | Moderate bandwidth pricing | Rapid prototyping and standard web apps |
+| **AWS Lightsail / t4g.medium** | **Cheap ($10 – $25/mo)** | 2 vCPU (AWS Graviton ARM), 4 GB RAM | Native AWS VPC integration, highly reliable | AWS ecosystem lock-in | Teams running within existing AWS infrastructures |
+| **RunPod Community GPU** | **Cheap ($0.20 – $0.40/hr)** | 1x RTX 3090 / 4090 (24 GB VRAM), 8 vCPU, 32 GB RAM | Blazing fast GPU inference at consumer prices | Community peer-to-peer hosting (variable reliability) | High-volume batch evaluation & fine-tuning |
+| **RunPod Secure / Lambda Labs** | **High Perf ($0.70 – $1.20/hr)** | 1x NVIDIA A10G (24 GB VRAM), 8 vCPU, 30 GB RAM | Dedicated datacenter GPU, 99.99% SLA, ultra-low latency | Requires on-demand or reserved commitment | Real-time security gateway ($>100$ req/s) |
+| **AWS ECS on EC2 (`g5.xlarge`)** | **High Perf (~$1.00/hr, ~$450–$720/mo)** | 1x NVIDIA A10G (24 GB VRAM), 4 vCPU, 16 GB RAM | Enterprise compliance (SOC2/HIPAA), IAM, CloudWatch | High idle cost if unreserved | High-scale enterprise infrastructure |
+| **GCP Cloud Run with L4 GPU** | **High Perf (Pay-per-second, ~$0.70/hr active)** | 1x NVIDIA L4 (24 GB VRAM), 4 vCPU, 16 GB RAM | Serverless GPU that scales to zero | Higher cost during continuous sustained traffic | Real-time GPU inference with variable traffic |
+| **Hetzner Dedicated Server** | **High Perf ($40 – $75/mo flat)** | 8–16 CPU cores (Intel i7/AMD Ryzen), 64 GB DDR4 RAM | **Flat monthly price**, unmetered gigabit network, raw performance | Setup fee, European locations | Massive CPU throughput (millions of daily calls) |
+
+---
+
+## 10. Step-by-Step Cloud Deployment Walkthroughs
+
+### 10.1 Free Tier: Hugging Face Spaces (Docker Space)
+Hugging Face provides **16 GB RAM** and **2 vCPUs** completely free in their basic Docker Spaces.
+
+1. **Create Space:**
+   - Navigate to [huggingface.co/new-space](https://huggingface.co/new-space).
+   - Name your Space: `safestep-detector`.
+   - Select **Docker** as the Space SDK.
+   - Choose the free **CPU basic (2 vCPU, 16 GB RAM)** hardware.
+
+2. **Add `README.md` Frontmatter:**
+   Create a `README.md` in your Space root with the following YAML header:
+   ```yaml
+   ---
+   title: SafeStep Detection API
+   emoji: 🛡️
+   colorFrom: blue
+   colorTo: green
+   sdk: docker
+   app_port: 8000
+   ---
+   ```
+
+3. **Deploy Repository:**
+   ```bash
+   git remote add space https://huggingface.co/spaces/YOUR_USERNAME/safestep-detector
+   git push space main
+   ```
+   Hugging Face will automatically build your `Dockerfile`, download model weights, and expose the FastAPI app on a public SSL endpoint: `https://YOUR_USERNAME-safestep-detector.hf.space`.
+
+---
+
+### 10.2 Serverless Tier: Google Cloud Run (Free / Pay-Per-Request)
+Google Cloud Run scales containers from 0 to 1,000+ instances automatically, incurring **$0 cost** when no requests arrive.
+
+1. **Authenticate and Set Project:**
+   ```bash
+   gcloud auth login
+   gcloud config set project YOUR_GCP_PROJECT_ID
+   ```
+
+2. **Build and Submit Container Image to Google Artifact Registry:**
+   ```bash
+   gcloud builds submit --tag gcr.io/YOUR_GCP_PROJECT_ID/safestep:latest .
+   ```
+
+3. **Deploy to Cloud Run:**
+   ```bash
+   gcloud run deploy safestep-api \
+     --image gcr.io/YOUR_GCP_PROJECT_ID/safestep:latest \
+     --platform managed \
+     --region us-central1 \
+     --allow-unauthenticated \
+     --memory 4Gi \
+     --cpu 2 \
+     --concurrency 40 \
+     --min-instances 0 \
+     --max-instances 10 \
+     --set-env-vars "SAFESTEP_DEVICE=cpu,SAFESTEP_MOCK_FALLBACK=false"
+   ```
+   Cloud Run outputs a production URL: `https://safestep-api-xyz-uc.a.run.app`.
+
+---
+
+### 10.3 Budget VPS Tier: Hetzner / DigitalOcean (Docker Compose + SSL)
+For under **$15/month**, a dedicated virtual server from Hetzner (CPX21) or DigitalOcean runs SafeStep with high availability and no cold starts.
+
+1. **Provision Server:**
+   - OS: Ubuntu 24.04 LTS.
+   - Hardware: 3 vCPU, 4 GB RAM.
+
+2. **Install Docker & Docker Compose:**
+   ```bash
+   sudo apt-get update && sudo apt-get install -y docker.io docker-compose-plugin certbot python3-certbot-nginx
+   sudo usermod -aG docker $USER
+   ```
+
+3. **Create `docker-compose.yml`:**
+   ```yaml
+   version: "3.8"
+   services:
+     safestep:
+       image: safestep:latest
+       build: .
+       restart: always
+       ports:
+         - "127.0.0.1:8000:8000"
+       environment:
+         - SAFESTEP_DEVICE=cpu
+         - SAFESTEP_ADMIN_TOKEN=your-random-production-token
+         - SAFESTEP_CORS_ORIGINS=https://yourdomain.com
+       volumes:
+         - ./checkpoints:/app/checkpoints:ro
+   ```
+
+4. **Launch Application:**
+   ```bash
+   docker compose up -d --build
+   ```
+
+5. **Configure Nginx & Free Let's Encrypt SSL:**
+   ```bash
+   # Obtain automated SSL certificate
+   sudo certbot --nginx -d api.yourdomain.com
+   ```
+
+6. **Create Systemd Auto-Start Service (`/etc/systemd/system/safestep.service`):**
+   ```ini
+   [Unit]
+   Description=SafeStep Detection Microservice
+   After=docker.service
+   Requires=docker.service
+
+   [Service]
+   WorkingDirectory=/opt/Safestep-Models
+   ExecStart=/usr/bin/docker compose up
+   ExecStop=/usr/bin/docker compose down
+   Restart=always
+   RestartSec=5
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+   ```bash
+   sudo systemctl daemon-reload && sudo systemctl enable --now safestep
+   ```
+
+---
+
+### 10.4 High-Performance GPU Tier: RunPod / Lambda / AWS G5 (CUDA)
+For enterprise workloads demanding $<15$ ms response times across all detectors:
+
+1. **Provision GPU Instance:**
+   - 1x NVIDIA A10G (AWS EC2 `g5.xlarge`) or 1x RTX 4090 (RunPod).
+   - Ensure NVIDIA Container Toolkit (`nvidia-docker2`) is installed.
+
+2. **Run Container with Full GPU Acceleration:**
+   ```bash
+   docker run -d \
+     --name safestep-gpu \
+     --gpus all \
+     -p 8000:8000 \
+     -v $(pwd)/checkpoints:/app/checkpoints:ro \
+     -e SAFESTEP_DEVICE=cuda \
+     -e SAFESTEP_MOCK_FALLBACK=false \
+     -e SAFESTEP_ADMIN_TOKEN="super-secret-token" \
+     safestep:latest
+   ```
+
+3. **Verify CUDA Device Initialization:**
+   ```bash
+   curl http://localhost:8000/models
+   ```
+   The response will confirm `"device": "cuda"` and load models onto GPU memory.
+
+---
+
+## 11. Production Operational Best Practices & Optimization
+
+### Worker Sizing & Concurrency
+- **CPU Deployments:** Set Uvicorn workers to:
+  $$\text{Workers} = 2 \times \text{vCPU Cores} + 1$$
+  *(For a 4-core server, run 9 Uvicorn workers).*
+- **GPU Deployments:** Keep Uvicorn workers low ($\le 2$ workers per GPU) to avoid CUDA out-of-memory context thrashing. Let FastAPI's asynchronous event loop queue incoming requests.
+
+### Cold-Start Mitigation
+On serverless platforms (Cloud Run, AWS Lambda):
+- Keep `--min-instances 1` if sub-second first-request latency is required.
+- Set up a lightweight cron ping hitting `GET /health` every 4 minutes to keep container warm.
+
+### Monitoring & Telemetry
+- Inspect the `X-Process-Time-Ms` response header in client applications or reverse proxies to track 95th/99th percentile latencies.
+- In Docker, monitor CPU and memory utilization live:
+  ```bash
+  docker stats safestep-api
+  ```
