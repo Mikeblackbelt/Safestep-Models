@@ -221,3 +221,6 @@ __marimo__/
 checkpoints/
 data/
 runs/
+
+# Agents / teamwork workdirs
+.agents/
