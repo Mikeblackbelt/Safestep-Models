@@ -114,11 +114,13 @@ class CARTTrainer:
 
     @torch.no_grad()
     def _evaluate_neural(self, texts: List[str], labels: List[str]) -> dict:
+        from training.evaluation import compute_evaluation_metrics
+
         model = self.detector.neural_model
         model.eval()
         label_ids = self._labels_to_ids(labels).numpy()
 
-        all_preds = []
+        all_probs = []
         for batch_texts, _ in self._iter_batches(
             texts, labels, self.config.eval_batch_size, shuffle=False
         ):
@@ -126,13 +128,12 @@ class CARTTrainer:
             input_ids = encoded["input_ids"].to(self.device)
             attention_mask = encoded["attention_mask"].to(self.device)
             outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-            preds = outputs["logits"].argmax(dim=-1).cpu().numpy()
-            all_preds.extend(preds.tolist())
+            probs = torch.softmax(outputs["logits"], dim=-1)[:, 1].cpu().numpy()
+            all_probs.extend(probs.tolist())
             self._emit("batch", phase="eval", samples=len(batch_texts))
 
-        all_preds = np.array(all_preds)
-        accuracy = float((all_preds == label_ids).mean())
-        return {"accuracy": accuracy}
+        all_probs = np.array(all_probs)
+        return compute_evaluation_metrics(y_true=label_ids, y_pred=all_probs, pos_label=1)
 
     def _train_neural_backbone(
         self,
@@ -161,11 +162,21 @@ class CARTTrainer:
             self._epoch = epoch + 1
             loss = self._run_neural_epoch(train_texts, train_labels, optimizer, None, criterion)
             metrics = self._evaluate_neural(val_texts, val_labels)
+            val_acc = metrics["accuracy"]
+            val_auroc = metrics.get("auroc", float("nan"))
+            auroc_str = f" val_auroc={val_auroc:.4f}" if val_auroc == val_auroc else ""
             logger.info(
                 f"  [frozen] epoch {epoch + 1}/{self.config.num_epochs_frozen} "
-                f"loss={loss:.4f} val_acc={metrics['accuracy']:.4f}"
+                f"loss={loss:.4f} val_acc={val_acc:.4f}{auroc_str}"
             )
-            self._emit("epoch", epochs=self.config.num_epochs_frozen, loss=loss, val_acc=metrics["accuracy"])
+            self._emit(
+                "epoch",
+                epochs=self.config.num_epochs_frozen,
+                loss=loss,
+                val_acc=val_acc,
+                val_auroc=val_auroc,
+                metrics=metrics,
+            )
 
         # Stage 2: unfreeze, fine-tune end-to-end at lower LR with warmup
         logger.info("CART Stage 2: fine-tuning full backbone")
@@ -186,11 +197,21 @@ class CARTTrainer:
             self._epoch = epoch + 1
             loss = self._run_neural_epoch(train_texts, train_labels, optimizer, scheduler, criterion)
             metrics = self._evaluate_neural(val_texts, val_labels)
+            val_acc = metrics["accuracy"]
+            val_auroc = metrics.get("auroc", float("nan"))
+            auroc_str = f" val_auroc={val_auroc:.4f}" if val_auroc == val_auroc else ""
             logger.info(
                 f"  [finetune] epoch {epoch + 1}/{self.config.num_epochs_finetune} "
-                f"loss={loss:.4f} val_acc={metrics['accuracy']:.4f}"
+                f"loss={loss:.4f} val_acc={val_acc:.4f}{auroc_str}"
             )
-            self._emit("epoch", epochs=self.config.num_epochs_finetune, loss=loss, val_acc=metrics["accuracy"])
+            self._emit(
+                "epoch",
+                epochs=self.config.num_epochs_finetune,
+                loss=loss,
+                val_acc=val_acc,
+                val_auroc=val_auroc,
+                metrics=metrics,
+            )
 
             if metrics["accuracy"] > best_val_acc:
                 best_val_acc = metrics["accuracy"]
@@ -219,11 +240,26 @@ class CARTTrainer:
 
         self.detector.fusion.fit(fused, label_ids)
 
-        preds = self.detector.fusion.predict(fused)
-        accuracy = float((preds == label_ids).mean())
-        logger.info(f"  Fusion model val accuracy: {accuracy:.4f}")
-        self._emit("fusion", val_acc=accuracy)
+        from training.evaluation import compute_evaluation_metrics
+
+        fusion_probs = self.detector.fusion.predict_proba(fused)[:, 1]
+        metrics = compute_evaluation_metrics(y_true=label_ids, y_pred=fusion_probs, pos_label=1)
+        accuracy = metrics["accuracy"]
+        auroc = metrics.get("auroc", float("nan"))
+        auroc_str = f" val_auroc: {auroc:.4f}" if auroc == auroc else ""
+        logger.info(f"  Fusion model val accuracy: {accuracy:.4f}{auroc_str}")
+        self._emit("fusion", val_acc=accuracy, val_auroc=auroc, metrics=metrics)
         logger.info(f"  Top fusion features: {list(self.detector.fusion.feature_importance().items())[:5]}")
+        self.last_val_metrics = metrics
+
+    def evaluate(self, texts: List[str], labels: List[str]) -> dict:
+        """Evaluate CART model on texts and labels using full pipeline or neural backbone."""
+        if self.detector.fusion.model is not None:
+            return self.detector.evaluate(texts, labels)
+        return self._evaluate_neural(texts, labels)
+
+    def _evaluate(self, texts: List[str], labels: List[str]) -> dict:
+        return self.evaluate(texts, labels)
 
     def fit(
         self,

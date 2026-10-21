@@ -113,6 +113,30 @@ class PhishingDetector:
             })
         return results
 
+    def predict_proba(self, texts: List[str], max_stage: str = "warhammer") -> np.ndarray:
+        """
+        Return (N, 2) array of [p_legitimate, p_phishing] across the escalation pipeline.
+        """
+        results = self.predict(texts, max_stage=max_stage)
+        if not results:
+            return np.empty((0, 2), dtype=float)
+        return np.array([[r["p_legitimate"], r["p_phishing"]] for r in results], dtype=float)
+
+    def evaluate(self, texts: List[str], labels: List[str], max_stage: str = "warhammer") -> dict:
+        """
+        Evaluate the detector on raw texts and labels, returning comprehensive evaluation metrics.
+        """
+        from training.evaluation import compute_evaluation_metrics
+
+        results = self.predict(texts, max_stage=max_stage)
+        if not results:
+            return {}
+        y_true = np.array([self.config.label2id[l] if isinstance(l, str) else int(l) for l in labels], dtype=np.int64)
+        p_phishing = np.array([r["p_phishing"] for r in results], dtype=float)
+        metrics = compute_evaluation_metrics(y_true, p_phishing)
+        metrics["stage_counts"] = {s: sum(1 for r in results if r["stage"] == s) for s in ("attack", "beast", "warhammer")}
+        return metrics
+
     def save(self, save_dir: Path) -> None:
         save_dir = Path(save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)

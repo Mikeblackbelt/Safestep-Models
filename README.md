@@ -12,6 +12,7 @@ Phishing samples only escalate to the next, more expensive stage while `p(phishi
 
 ## 📚 Documentation
 
+- [Newcomer's Guide](docs/newcomer_guide.md): onboarding, 5-fold cross-validation, AUROC, external benchmarks, and ANOVA significance testing
 - [Architecture](docs/architecture.md): model designs, data flow, checkpoint files
 - [Training](docs/training.md): full `train.py` / `train.sh` flag reference, data layouts, demo mode, resume
 - [Deployment](docs/deployment.md): running the API, environment variables, Docker, production checklist

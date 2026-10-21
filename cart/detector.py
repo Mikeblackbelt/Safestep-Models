@@ -68,6 +68,38 @@ class CARTDetector:
             })
         return results
 
+    def predict_proba(self, texts: List[str]) -> np.ndarray:
+        """
+        Return (N, 2) array of [p_human, p_ai] across the full hybrid pipeline.
+        """
+        neural_probs = self._neural_probs(texts)
+        heuristic_feats = self.heuristics.extract_batch(texts)
+        fused = self.fusion.build_features(neural_probs, heuristic_feats)
+        if self.fusion.model is not None:
+            return self.fusion.predict_proba(fused)
+        return neural_probs
+
+    def evaluate(self, texts: List[str], labels: List[str]) -> dict:
+        """
+        Evaluate full end-to-end CART detector on texts and ground truth labels.
+
+        Returns:
+            Dict containing accuracy, precision, recall, f1, auroc, roc_curve.
+        """
+        from training.evaluation import compute_evaluation_metrics
+
+        label_ids = np.array([self.config.label2id[l] for l in labels])
+        neural_probs = self._neural_probs(texts)
+        heuristic_feats = self.heuristics.extract_batch(texts)
+        fused = self.fusion.build_features(neural_probs, heuristic_feats)
+
+        if self.fusion.model is not None:
+            probs = self.fusion.predict_proba(fused)[:, 1]
+        else:
+            probs = neural_probs[:, 1]
+
+        return compute_evaluation_metrics(y_true=label_ids, y_pred=probs, pos_label=1)
+
     def save(self, save_dir: Path) -> None:
         save_dir = Path(save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)

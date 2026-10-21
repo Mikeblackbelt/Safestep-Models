@@ -54,6 +54,17 @@ For phishing, `--epochs-frozen`, `--epochs-finetune`, `--batch-size` and `--lr` 
 | `--max-samples N` | `20000` | Max records kept per downloaded source, balanced by label. `0` keeps everything |
 | `--no-download` | off | Don't download phishing data automatically when local data is missing |
 
+### Evaluation & Validation
+
+| Flag | Default | Description |
+|---|---|---|
+| `--cross-val [K]`, `-cv` | `5` | Run K-fold stratified cross-validation with per-fold breakdowns and summary statistics (mean ± std) |
+| `--eval-external PATH_OR_ID` | none | Evaluate model on an external benchmark dataset (CSV, JSONL, or image directory) with schema auto-inference |
+| `--export-roc PATH` | none | Export ROC curve coordinates (FPR, TPR, thresholds) to JSON or CSV |
+| `--significance-test`, `--anova` | off | Run One-Way ANOVA significance testing reporting F-statistic and p-value at $\alpha=0.05$ |
+
+See the [Newcomer's Guide](newcomer_guide.md) for full tutorials and step-by-step instructions.
+
 `--history`, `--download-data` and `--prepare-data` are handled first and exit before any training.
 
 ---

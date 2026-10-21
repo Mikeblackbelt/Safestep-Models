@@ -116,11 +116,13 @@ class JAWTrainer:
 
     @torch.no_grad()
     def _evaluate(self, paths: List[Union[str, Path]], labels: List[str]) -> dict:
+        from training.evaluation import compute_evaluation_metrics
+
         model = self.detector.model
         model.eval()
         label_ids = self._labels_to_ids(labels).numpy()
 
-        all_preds = []
+        all_probs = []
         for batch_paths, _ in self._iter_batches(
             paths, labels, self.config.eval_batch_size, shuffle=False
         ):
@@ -131,13 +133,16 @@ class JAWTrainer:
             freq_tensor = torch.from_numpy(freq_feats).to(self.device)
 
             outputs = model(images=image_tensor, freq_features=freq_tensor)
-            preds = outputs["logits"].argmax(dim=-1).cpu().numpy()
-            all_preds.extend(preds.tolist())
+            probs = torch.softmax(outputs["logits"], dim=-1)[:, 1].cpu().numpy()
+            all_probs.extend(probs.tolist())
             self._emit("batch", phase="eval", samples=len(batch_paths))
 
-        all_preds = np.array(all_preds)
-        accuracy = float((all_preds == label_ids).mean())
-        return {"accuracy": accuracy}
+        all_probs = np.array(all_probs)
+        return compute_evaluation_metrics(y_true=label_ids, y_pred=all_probs, pos_label=1)
+
+    def evaluate(self, paths: List[Union[str, Path]], labels: List[str]) -> dict:
+        """Evaluate JAW on image paths and labels."""
+        return self._evaluate(paths, labels)
 
     def fit(
         self,
@@ -167,11 +172,21 @@ class JAWTrainer:
             self._epoch = epoch + 1
             loss = self._run_epoch(train_paths, train_labels, optimizer, None, criterion)
             metrics = self._evaluate(val_paths, val_labels)
+            val_acc = metrics["accuracy"]
+            val_auroc = metrics.get("auroc", float("nan"))
+            auroc_str = f" val_auroc={val_auroc:.4f}" if val_auroc == val_auroc else ""
             logger.info(
                 f"  [frozen] epoch {epoch + 1}/{self.config.num_epochs_frozen} "
-                f"loss={loss:.4f} val_acc={metrics['accuracy']:.4f}"
+                f"loss={loss:.4f} val_acc={val_acc:.4f}{auroc_str}"
             )
-            self._emit("epoch", epochs=self.config.num_epochs_frozen, loss=loss, val_acc=metrics["accuracy"])
+            self._emit(
+                "epoch",
+                epochs=self.config.num_epochs_frozen,
+                loss=loss,
+                val_acc=val_acc,
+                val_auroc=val_auroc,
+                metrics=metrics,
+            )
 
         # Stage 2: unfreeze, fine-tune end-to-end
         logger.info("JAW Stage 2: fine-tuning full model")
@@ -190,11 +205,21 @@ class JAWTrainer:
             self._epoch = epoch + 1
             loss = self._run_epoch(train_paths, train_labels, optimizer, scheduler, criterion)
             metrics = self._evaluate(val_paths, val_labels)
+            val_acc = metrics["accuracy"]
+            val_auroc = metrics.get("auroc", float("nan"))
+            auroc_str = f" val_auroc={val_auroc:.4f}" if val_auroc == val_auroc else ""
             logger.info(
                 f"  [finetune] epoch {epoch + 1}/{self.config.num_epochs_finetune} "
-                f"loss={loss:.4f} val_acc={metrics['accuracy']:.4f}"
+                f"loss={loss:.4f} val_acc={val_acc:.4f}{auroc_str}"
             )
-            self._emit("epoch", epochs=self.config.num_epochs_finetune, loss=loss, val_acc=metrics["accuracy"])
+            self._emit(
+                "epoch",
+                epochs=self.config.num_epochs_finetune,
+                loss=loss,
+                val_acc=val_acc,
+                val_auroc=val_auroc,
+                metrics=metrics,
+            )
 
             if metrics["accuracy"] > best_val_acc:
                 best_val_acc = metrics["accuracy"]
@@ -206,5 +231,6 @@ class JAWTrainer:
                     self._emit("early_stop")
                     break
 
+        self.last_val_metrics = metrics
         logger.info("JAW training complete.")
         return self.detector

@@ -18,7 +18,7 @@ Usage:
 """
 
 import math
-from typing import Callable, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 import torch
@@ -28,6 +28,7 @@ from torch.optim.lr_scheduler import LambdaLR
 
 from phishing.config import PhishingConfig
 from phishing.detector import PhishingDetector
+from training.evaluation import compute_evaluation_metrics
 from util.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -76,7 +77,7 @@ class PhishingTrainer:
 
     # -- Stage 1: Attack -------------------------------------------------
 
-    def _fit_attack(self, train_texts, train_labels, val_texts, val_labels) -> None:
+    def _fit_attack(self, train_texts, train_labels, val_texts, val_labels) -> Dict[str, Any]:
         logger.info("Phishing Stage 1: fitting Attack (char n-gram TF-IDF + logistic regression)")
         self._stage = "attack"
         self._epoch = 0
@@ -84,13 +85,18 @@ class PhishingTrainer:
         self.detector.attack.fit(train_texts, self._label_ids(train_labels))
 
         probs = self.detector.attack.predict_proba(val_texts)[:, 1]
-        accuracy = float(((probs >= self.config.decision_threshold) == self._label_ids(val_labels)).mean())
-        logger.info(f"  Attack val accuracy: {accuracy:.4f}")
-        self._emit("attack", val_acc=accuracy)
+        y_true = self._label_ids(val_labels)
+        metrics = compute_evaluation_metrics(y_true, probs)
+        accuracy = metrics["accuracy"]
+        auroc = metrics.get("auroc", float("nan"))
+        auroc_str = f"  auroc: {auroc:.4f}" if auroc == auroc else ""
+        logger.info(f"  Attack val accuracy: {accuracy:.4f}{auroc_str}")
+        self._emit("attack", val_acc=accuracy, val_auroc=auroc, metrics=metrics)
+        return metrics
 
     # -- Stage 2: Beast --------------------------------------------------
 
-    def _fit_beast(self, val_texts: List[str], val_labels: List[str]) -> None:
+    def _fit_beast(self, val_texts: List[str], val_labels: List[str]) -> Dict[str, Any]:
         """
         Fit Beast on the validation split — held out from Attack's training,
         so Attack's probabilities here reflect how it behaves on unseen data.
@@ -107,10 +113,14 @@ class PhishingTrainer:
         self.detector.beast.fit(features, label_ids)
 
         probs = self.detector.beast.predict_proba(features)[:, 1]
-        accuracy = float(((probs >= self.config.decision_threshold) == label_ids).mean())
-        logger.info(f"  Beast val accuracy (fit split): {accuracy:.4f}")
-        self._emit("beast", val_acc=accuracy)
+        metrics = compute_evaluation_metrics(label_ids, probs)
+        accuracy = metrics["accuracy"]
+        auroc = metrics.get("auroc", float("nan"))
+        auroc_str = f"  auroc: {auroc:.4f}" if auroc == auroc else ""
+        logger.info(f"  Beast val accuracy (fit split): {accuracy:.4f}{auroc_str}")
+        self._emit("beast", val_acc=accuracy, val_auroc=auroc, metrics=metrics)
         logger.info(f"  Top Beast features: {list(self.detector.beast.feature_importance().items())[:5]}")
+        return metrics
 
     # -- Stage 3: Warhammer ----------------------------------------------
 
@@ -149,9 +159,11 @@ class PhishingTrainer:
 
     def _evaluate_warhammer(self, texts: List[str], labels: List[str]) -> dict:
         probs = self.detector._warhammer_probs(texts)
-        preds = probs.argmax(axis=1)
+        phish_probs = probs[:, 1]
+        label_ids = self._label_ids(labels)
+        metrics = compute_evaluation_metrics(label_ids, phish_probs)
         self._emit("batch", phase="eval", samples=len(texts))
-        return {"accuracy": float((preds == self._label_ids(labels)).mean())}
+        return metrics
 
     def _train_warhammer(self, train_texts, train_labels, val_texts, val_labels) -> None:
         model = self.detector.warhammer
@@ -171,11 +183,21 @@ class PhishingTrainer:
             self._epoch = epoch + 1
             loss = self._run_warhammer_epoch(train_texts, train_labels, optimizer, None, criterion)
             metrics = self._evaluate_warhammer(val_texts, val_labels)
+            val_acc = metrics["accuracy"]
+            val_auroc = metrics.get("auroc", float("nan"))
+            auroc_str = f" val_auroc={val_auroc:.4f}" if val_auroc == val_auroc else ""
             logger.info(
                 f"  [frozen] epoch {epoch + 1}/{self.config.num_epochs_frozen} "
-                f"loss={loss:.4f} val_acc={metrics['accuracy']:.4f}"
+                f"loss={loss:.4f} val_acc={val_acc:.4f}{auroc_str}"
             )
-            self._emit("epoch", epochs=self.config.num_epochs_frozen, loss=loss, val_acc=metrics["accuracy"])
+            self._emit(
+                "epoch",
+                epochs=self.config.num_epochs_frozen,
+                loss=loss,
+                val_acc=val_acc,
+                val_auroc=val_auroc,
+                metrics=metrics,
+            )
 
         # Stage 3b: unfreeze, fine-tune end-to-end at lower LR with warmup
         logger.info("Phishing Stage 3b: fine-tuning full Warhammer backbone")
@@ -198,11 +220,21 @@ class PhishingTrainer:
             self._epoch = epoch + 1
             loss = self._run_warhammer_epoch(train_texts, train_labels, optimizer, scheduler, criterion)
             metrics = self._evaluate_warhammer(val_texts, val_labels)
+            val_acc = metrics["accuracy"]
+            val_auroc = metrics.get("auroc", float("nan"))
+            auroc_str = f" val_auroc={val_auroc:.4f}" if val_auroc == val_auroc else ""
             logger.info(
                 f"  [finetune] epoch {epoch + 1}/{self.config.num_epochs_finetune} "
-                f"loss={loss:.4f} val_acc={metrics['accuracy']:.4f}"
+                f"loss={loss:.4f} val_acc={val_acc:.4f}{auroc_str}"
             )
-            self._emit("epoch", epochs=self.config.num_epochs_finetune, loss=loss, val_acc=metrics["accuracy"])
+            self._emit(
+                "epoch",
+                epochs=self.config.num_epochs_finetune,
+                loss=loss,
+                val_acc=val_acc,
+                val_auroc=val_auroc,
+                metrics=metrics,
+            )
 
             if metrics["accuracy"] > best_val_acc:
                 best_val_acc = metrics["accuracy"]
@@ -218,16 +250,35 @@ class PhishingTrainer:
 
     # -- Full pipeline ---------------------------------------------------
 
-    def _evaluate_pipeline(self, val_texts: List[str], val_labels: List[str]) -> None:
+    def _evaluate_pipeline(self, val_texts: List[str], val_labels: List[str]) -> Dict[str, Any]:
         self._stage = "pipeline"
         self._epoch = 0
         results = self.detector.predict(val_texts)
-        preds = np.array([self.config.label2id[r["label"]] for r in results])
-        accuracy = float((preds == self._label_ids(val_labels)).mean())
+        y_true = self._label_ids(val_labels)
+        p_phishing = np.array([r["p_phishing"] for r in results], dtype=float)
+        metrics = compute_evaluation_metrics(y_true, p_phishing)
         stage_counts = {s: sum(1 for r in results if r["stage"] == s) for s in ("attack", "beast", "warhammer")}
+        metrics["stage_counts"] = stage_counts
+
         # Beast was fit on this split, so this is optimistic; use a test split for a real number.
-        logger.info(f"  Pipeline val accuracy: {accuracy:.4f}  decided by stage: {stage_counts}")
-        self._emit("pipeline", val_acc=accuracy, stage_counts=stage_counts)
+        auroc = metrics.get("auroc", float("nan"))
+        auroc_str = f"  auroc: {auroc:.4f}" if auroc == auroc else ""
+        logger.info(
+            f"  Pipeline val accuracy: {metrics['accuracy']:.4f}{auroc_str}  "
+            f"decided by stage: {stage_counts}"
+        )
+        self._emit(
+            "pipeline",
+            val_acc=metrics["accuracy"],
+            val_auroc=auroc,
+            stage_counts=stage_counts,
+            metrics=metrics,
+        )
+        return metrics
+
+    def evaluate(self, texts: List[str], labels: List[str]) -> Dict[str, Any]:
+        """Evaluate the full escalation pipeline on arbitrary texts and labels."""
+        return self.detector.evaluate(texts, labels)
 
     def fit(
         self,
@@ -241,6 +292,6 @@ class PhishingTrainer:
         self._fit_beast(val_texts, val_labels)
         if self.detector.warhammer is not None:
             self._train_warhammer(train_texts, train_labels, val_texts, val_labels)
-        self._evaluate_pipeline(val_texts, val_labels)
+        self.last_val_metrics = self._evaluate_pipeline(val_texts, val_labels)
         logger.info("Phishing training complete.")
         return self.detector

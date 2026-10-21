@@ -68,6 +68,40 @@ class JAWDetector:
             })
         return results
 
+    def predict_proba(self, image_paths: List[Union[str, Path]], batch_size: int = 32) -> np.ndarray:
+        """
+        Return (N, 2) array of [p_authentic, p_ai] across image paths.
+        """
+        all_probs = []
+        for i in range(0, len(image_paths), batch_size):
+            batch_paths = image_paths[i:i + batch_size]
+            image_tensor, raw_arrays = self.preprocessor.load_and_prepare(batch_paths)
+            probs = self._predict_from_tensors(image_tensor, raw_arrays)
+            all_probs.append(probs)
+        if not all_probs:
+            return np.empty((0, 2), dtype=float)
+        return np.vstack(all_probs)
+
+    def evaluate(self, image_paths: List[Union[str, Path]], labels: List[str], batch_size: int = 32) -> dict:
+        """
+        Evaluate JAW detector on image paths and ground truth labels.
+
+        Returns:
+            Dict containing accuracy, precision, recall, f1, auroc, roc_curve.
+        """
+        from training.evaluation import compute_evaluation_metrics
+
+        label_ids = np.array([self.config.label2id[l] for l in labels])
+        all_probs = []
+        for i in range(0, len(image_paths), batch_size):
+            batch_paths = image_paths[i:i + batch_size]
+            image_tensor, raw_arrays = self.preprocessor.load_and_prepare(batch_paths)
+            probs = self._predict_from_tensors(image_tensor, raw_arrays)
+            all_probs.extend(probs[:, 1].tolist())
+
+        all_probs = np.array(all_probs)
+        return compute_evaluation_metrics(y_true=label_ids, y_pred=all_probs, pos_label=1)
+
     def save(self, save_dir: Path) -> None:
         save_dir = Path(save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)
