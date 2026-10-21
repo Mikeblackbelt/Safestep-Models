@@ -440,11 +440,34 @@ def detect_image_json(payload: ImageDetectionJsonRequest):
         identifier = "base64_payload"
     elif payload.image_url:
         import urllib.request
+        from urllib.parse import urlparse
+        parsed = urlparse(payload.image_url)
+        if parsed.scheme.lower() not in ("http", "https"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="image_url must use an http or https scheme",
+            )
         try:
             req = urllib.request.Request(payload.image_url, headers={"User-Agent": "SafeStep-API/1.0"})
             with urllib.request.urlopen(req, timeout=10) as resp:
-                img_target = resp.read()
+                max_bytes = default_api_config.max_upload_size_bytes
+                chunks = []
+                bytes_read = 0
+                while True:
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    bytes_read += len(chunk)
+                    if bytes_read > max_bytes:
+                        raise HTTPException(
+                            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                            detail=f"Image from URL exceeds limit of {max_bytes // (1024 * 1024)}MB",
+                        )
+                    chunks.append(chunk)
+                img_target = b"".join(chunks)
             identifier = payload.image_url
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

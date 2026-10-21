@@ -122,6 +122,13 @@ def test_detect_image_json(client, sample_assets):
     assert 0.0 <= data["p_ai"] <= 1.0
 
 
+def test_detect_image_json_invalid_url_scheme(client):
+    """Test POST /api/v1/detect/image/json rejects non-http schemes (e.g. file://)."""
+    resp = client.post("/api/v1/detect/image/json", json={"image_url": "file:///etc/passwd"})
+    assert resp.status_code == 400
+    assert "http or https" in resp.json()["detail"]
+
+
 def test_detect_unified(client, sample_assets):
     """Test POST /api/v1/detect/unified."""
     img_path = sample_assets["synthetic"]

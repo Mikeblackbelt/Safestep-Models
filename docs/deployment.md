@@ -18,15 +18,23 @@ SafeStep ships a production-ready, asynchronous HTTP microservice built on **Fas
 - [4. Configuration & Environment Variables](#4-configuration--environment-variables)
 - [5. Zero-Downtime Checkpoint Hot-Reloading](#5-zero-downtime-checkpoint-hot-reloading)
 - [6. Docker Containerization & Orchestration](#6-docker-containerization--orchestration)
-- [7. Production Reverse Proxy & Security Hardening](#7-production-reverse-proxy--security-hardening)
+- [7. Production Reverse Proxy & Nginx Setup](#7-production-reverse-proxy--nginx-setup)
 - [8. Hardware Resource Requirements & Sizing Guide](#8-hardware-resource-requirements--sizing-guide)
-- [9. Cloud Services & Pricing Matrix (Free, Cheap, High Performance)](#9-cloud-services--pricing-matrix-free-cheap-high-performance)
+- [9. Cloud Services & Pricing Matrix (Free, Budget, High Performance)](#9-cloud-services--pricing-matrix-free-budget-high-performance)
+  - [9.1 Free Tier Options ($0 / month)](#91-free-tier-options-0--month)
+  - [9.2 Budget & Low-Cost VPS Options ($3 – $35 / month)](#92-budget--low-cost-vps-options-3--35--month)
+  - [9.3 High-Performance & Enterprise GPU Options ($50 – $300+ / month)](#93-high-performance--enterprise-gpu-options-50--300--month)
 - [10. Step-by-Step Cloud Deployment Walkthroughs](#10-step-by-step-cloud-deployment-walkthroughs)
   - [10.1 Free Tier: Hugging Face Spaces (Docker Space)](#101-free-tier-hugging-face-spaces-docker-space)
-  - [10.2 Serverless Tier: Google Cloud Run (Free / Pay-Per-Request)](#102-serverless-tier-google-cloud-run-free--pay-per-request)
-  - [10.3 Budget VPS Tier: Hetzner / DigitalOcean (Docker Compose + SSL)](#103-budget-vps-tier-hetzner--digitalocean-docker-compose--ssl)
-  - [10.4 High-Performance GPU Tier: RunPod / Lambda / AWS G5 (CUDA)](#104-high-performance-gpu-tier-runpod--lambda--aws-g5-cuda)
-- [11. Production Operational Best Practices & Optimization](#11-production-operational-best-practices--optimization)
+  - [10.2 Free Tier: Cloudflare Tunnel (Zero-Cost Self-Hosting)](#102-free-tier-cloudflare-tunnel-zero-cost-self-hosting)
+  - [10.3 Free / Serverless Tier: Google Cloud Run](#103-free--serverless-tier-google-cloud-run)
+  - [10.4 Free / Hobby Tier: Koyeb & Fly.io](#104-free--hobby-tier-koyeb--flyio)
+  - [10.5 Free Temporary GPU: Google Colab / Kaggle with Cloudflared](#105-free-temporary-gpu-google-colab--kaggle-with-cloudflared)
+  - [10.6 Budget VPS Tier: Hetzner / DigitalOcean / Contabo (Docker Compose + SSL)](#106-budget-vps-tier-hetzner--digitalocean--contabo-docker-compose--ssl)
+  - [10.7 Ultra-Budget On-Demand GPU: Vast.ai & RunPod Community](#107-ultra-budget-on-demand-gpu-vastai--runpod-community)
+  - [10.8 High-Performance GPU Tier: RunPod Secure / Lambda / AWS G5 (CUDA)](#108-high-performance-gpu-tier-runpod-secure--lambda--aws-g5-cuda)
+- [11. Built-In Security Features & Hardening Checklist](#11-built-in-security-features--hardening-checklist)
+- [12. Production Operational Best Practices & Optimization](#12-production-operational-best-practices--optimization)
 
 ---
 
@@ -398,7 +406,7 @@ docker run -d \
 
 ---
 
-## 7. Production Reverse Proxy & Security Hardening
+## 7. Production Reverse Proxy & Nginx Setup
 
 In production, place the SafeStep container behind **Nginx** or **Cloudflare** for TLS termination, rate limiting, and request buffering:
 
@@ -463,7 +471,7 @@ SafeStep detectors are engineered to be lightweight and operational across diver
 
 ---
 
-## 9. Cloud Services & Pricing Matrix (Free, Cheap, High Performance)
+## 9. Cloud Services & Pricing Matrix (Free, Budget, High Performance)
 
 Depending on your budget, latency SLA, and anticipated traffic volume, SafeStep can be hosted on a variety of battle-tested cloud providers across three pricing tiers:
 
@@ -472,31 +480,51 @@ Depending on your budget, latency SLA, and anticipated traffic volume, SafeStep 
 │                                 SafeStep Cloud Spectrum                                │
 ├────────────────────────┬───────────────────────────────┬───────────────────────────────┤
 │    Tier 1: Free Tier   │     Tier 2: Budget VPS        │    Tier 3: High Performance   │
-│       ($0 / month)     │     ($5 – $35 / month)        │     ($50 – $300+ / month)     │
+│       ($0 / month)     │     ($3 – $35 / month)        │     ($50 – $300+ / month)     │
 ├────────────────────────┼───────────────────────────────┼───────────────────────────────┤
 │ • Hugging Face Spaces  │ • Hetzner Cloud (CPX21/31)    │ • RunPod Secure Cloud (A10G)  │
-│ • Oracle Always Free   │ • DigitalOcean / Linode       │ • AWS ECS / EKS (g5.xlarge)   │
-│ • Google Cloud Run     │ • AWS Lightsail / EC2 Graviton│ • GCP Cloud Run with L4 GPU   │
-│ • Render Free Service  │ • RunPod Community Cloud (GPU)│ • Dedicated Bare Metal Server │
+│ • Oracle Always Free   │ • OVHcloud VPS ($4.20/mo)     │ • Lambda Labs (A100 / A10)    │
+│ • Cloudflare Tunnel    │ • Contabo VPS ($5.50/mo)      │ • AWS ECS / EKS (g5.xlarge)   │
+│ • Google Cloud Run     │ • Scaleway DEV1-S (€5/mo)     │ • GCP Cloud Run with L4 GPU   │
+│ • Koyeb / Fly.io       │ • DigitalOcean / Linode       │ • Modal / OctoAI Serverless   │
+│ • Colab / Kaggle (GPU) │ • Vast.ai ($0.10/hr GPU)      │ • Dedicated Bare Metal Server │
 └────────────────────────┴───────────────────────────────┴───────────────────────────────┘
 ```
 
-### Comprehensive Pricing & Provider Comparison
+### 9.1 Free Tier Options ($0 / month)
 
 | Provider & Service | Pricing Model | Included Specs | Strengths | Limitations | Best Suited For |
 |---|---|---|---|---|---|
-| **Hugging Face Spaces** | **Free ($0/mo)** | 2 vCPU, 16 GB RAM, 50 GB disk | 16 GB RAM at zero cost, free HTTPS & Git-push deploy | Sleeps after 48h idle, CPU only | Public demo, portfolio, staging testing |
-| **Oracle Cloud Always Free** | **Free ($0/mo)** | Up to 4 ARM OCPUs, 24 GB RAM, 200 GB disk | 24/7 uptime without sleep, massive 24GB RAM | Strict sign-up verification, requires ARM Docker build | Non-profit 24/7 production, student labs |
-| **Google Cloud Run (Free Tier)** | **Free ($0/mo)** | 2M requests/mo, 360k GB-sec free | Pay-only-for-traffic, scales to 0, Google edge routing | Cold-starts on zero traffic ($\sim 5\text{--}8$s) | Sporadic or bursty API traffic |
-| **Render Free Tier** | **Free ($0/mo)** | 0.5 CPU, 512 MB RAM | Dead simple setup | Low RAM (only suitable for single model CART) | Quick toy testing |
-| **Hetzner Cloud (CPX21/CPX31)** | **Cheap (~$6 – $16/mo)** | 3 to 4 AMD vCPU, 4 to 8 GB RAM, 80-160 GB NVMe | **Unbeatable cost-to-performance**, high CPU clock speed, 20TB egress | Self-managed Linux VM (requires basic DevOps) | **Production recommendation for budget startups** |
-| **DigitalOcean Droplets** | **Cheap ($6 – $24/mo)** | 1 to 2 vCPU, 1 to 4 GB RAM, 25-80 GB SSD | 1-click Docker marketplace, global datacenters | Moderate bandwidth pricing | Rapid prototyping and standard web apps |
-| **AWS Lightsail / t4g.medium** | **Cheap ($10 – $25/mo)** | 2 vCPU (AWS Graviton ARM), 4 GB RAM | Native AWS VPC integration, highly reliable | AWS ecosystem lock-in | Teams running within existing AWS infrastructures |
-| **RunPod Community GPU** | **Cheap ($0.20 – $0.40/hr)** | 1x RTX 3090 / 4090 (24 GB VRAM), 8 vCPU, 32 GB RAM | Blazing fast GPU inference at consumer prices | Community peer-to-peer hosting (variable reliability) | High-volume batch evaluation & fine-tuning |
-| **RunPod Secure / Lambda Labs** | **High Perf ($0.70 – $1.20/hr)** | 1x NVIDIA A10G (24 GB VRAM), 8 vCPU, 30 GB RAM | Dedicated datacenter GPU, 99.99% SLA, ultra-low latency | Requires on-demand or reserved commitment | Real-time security gateway ($>100$ req/s) |
-| **AWS ECS on EC2 (`g5.xlarge`)** | **High Perf (~$1.00/hr, ~$450–$720/mo)** | 1x NVIDIA A10G (24 GB VRAM), 4 vCPU, 16 GB RAM | Enterprise compliance (SOC2/HIPAA), IAM, CloudWatch | High idle cost if unreserved | High-scale enterprise infrastructure |
-| **GCP Cloud Run with L4 GPU** | **High Perf (Pay-per-second, ~$0.70/hr active)** | 1x NVIDIA L4 (24 GB VRAM), 4 vCPU, 16 GB RAM | Serverless GPU that scales to zero | Higher cost during continuous sustained traffic | Real-time GPU inference with variable traffic |
-| **Hetzner Dedicated Server** | **High Perf ($40 – $75/mo flat)** | 8–16 CPU cores (Intel i7/AMD Ryzen), 64 GB DDR4 RAM | **Flat monthly price**, unmetered gigabit network, raw performance | Setup fee, European locations | Massive CPU throughput (millions of daily calls) |
+| **Hugging Face Spaces** | **$0/month** (Free forever) | 2 vCPU, 16 GB RAM, 50 GB disk | **16 GB RAM at zero cost**, free HTTPS, git-push deploy | Sleeps after 48h idle, CPU only | Public demo, portfolio, staging testing |
+| **Oracle Cloud Always Free** | **$0/month** (Free forever) | Up to 4 ARM OCPUs, 24 GB RAM, 200 GB disk | **24/7 uptime without sleeping**, huge 24GB RAM | Account registration verification, ARM architecture | 24/7 free production server, student labs |
+| **Cloudflare Tunnel (Self-Hosted)** | **$0/month** (Free forever) | Runs on any local hardware (Mac Mini, PC) | **Zero cloud hosting bill**, enterprise DDoS defense, no port forwarding | Requires an always-on local device | Private homelab, office internal deployments |
+| **Google Cloud Run (Free Tier)** | **$0/month** (Pay-per-request) | 2M requests/mo, 360k GB-sec free | Pay-only-for-traffic, scales to zero | Cold starts on zero traffic ($\sim 5\text{--}8$s) | Low-volume or sporadic webhook traffic |
+| **Koyeb Free Tier** | **$0/month** (Free nano tier) | 1 vCPU, 512 MB RAM | Global edge network, automatic TLS, zero sleeping | Low memory (best for CART text model alone) | Micro-service text detection |
+| **Fly.io Free Allowance** | **$0/month** (Free credits) | 1 shared CPU, 256MB–1GB RAM | Anycast routing, private WireGuard mesh | Credit limitations | Developer testing |
+| **Google Colab / Kaggle (GPU)** | **$0/month** (Free session) | 1x NVIDIA T4 (15 GB VRAM), 12 GB RAM | **Free high-performance GPU**, zero setup cost | Sessions time out after 12h, requires tunnel | Temporary GPU demonstrations, batch test runs |
+
+### 9.2 Budget & Low-Cost VPS Options ($3 – $35 / month)
+
+| Provider & Service | Pricing Model | Included Specs | Strengths | Limitations | Best Suited For |
+|---|---|---|---|---|---|
+| **Hetzner Cloud (CPX21/CPX31)** | **~$6 – $16/mo** (€5.90 – €14.50) | 3 to 4 AMD vCPU, 4 to 8 GB RAM, 80-160 GB NVMe | **Unbeatable cost-to-performance**, high CPU clock speed, 20TB egress | Self-managed Linux VM (requires basic DevOps) | **Top production recommendation for budget startups** |
+| **OVHcloud Value VPS** | **$4.20/month** | 1 vCPU, 2 GB RAM, 40 GB NVMe | Extremely affordable, unmetered 250 Mbps, anti-DDoS included | 1 vCPU limits peak concurrency | Low-budget reliable production |
+| **Contabo Cloud VPS S** | **$5.50 – $6.50/mo** | 4 vCPU, 8 GB RAM, 50 GB NVMe (or 200 GB SSD) | **Highest RAM per dollar on the market** (8GB for $5.50) | I/O performance can fluctuate under neighbor load | Memory-heavy deployments with all models loaded |
+| **Scaleway (DEV1-S / Stardust)** | **€1.80 – €5.00/mo** | 1 to 2 vCPU, 1 to 2 GB RAM | Hourly billing (€0.0025/hr), European datacenter | Modest CPU power | Budget European compliance hosting |
+| **DigitalOcean / Linode** | **$6 – $24/month** | 1 to 2 vCPU, 1 to 4 GB RAM, 25-80 GB SSD | 1-click Docker marketplace, global datacenters | Moderate bandwidth pricing | Standard developer stacks |
+| **AWS Lightsail / t4g.medium** | **$10 – $25/month** | 2 vCPU (AWS Graviton ARM), 4 GB RAM | Native AWS VPC integration, highly reliable | AWS ecosystem lock-in | Teams running within existing AWS infrastructures |
+| **Vast.ai (On-Demand GPU)** | **$0.10 – $0.25/hour** (~$5–$15/mo) | 1x RTX 3080 / 3090 (10–24 GB VRAM) | **Cheapest GPU access available anywhere** | Community peer-to-peer hosting | Budget model fine-tuning and batch scoring |
+| **RunPod Community GPU** | **$0.20 – $0.40/hour** (~$10–$25/mo) | 1x RTX 3090 / 4090 (24 GB VRAM), 8 vCPU | Blazing fast GPU inference at consumer prices | Variable node availability | High-volume batch evaluation & fine-tuning |
+
+### 9.3 High-Performance & Enterprise GPU Options ($50 – $300+ / month)
+
+| Provider & Service | Pricing Model | Included Specs | Strengths | Limitations | Best Suited For |
+|---|---|---|---|---|---|
+| **RunPod Secure / Lambda Labs** | **$0.70 – $1.20/hr** (~$500/mo unreserved) | 1x NVIDIA A10G (24 GB VRAM), 8 vCPU, 30 GB RAM | Dedicated datacenter GPU, 99.99% SLA, ultra-low latency | Requires on-demand or reserved commitment | Real-time security gateway ($>100$ req/s) |
+| **AWS ECS on EC2 (`g5.xlarge`)** | **~$1.00/hr** (~$450–$720/mo) | 1x NVIDIA A10G (24 GB VRAM), 4 vCPU, 16 GB RAM | Enterprise compliance (SOC2/HIPAA), IAM, CloudWatch | High idle cost if unreserved | High-scale enterprise infrastructure |
+| **GCP Cloud Run with L4 GPU** | **Pay-per-sec** (~$0.70/hr active) | 1x NVIDIA L4 (24 GB VRAM), 4 vCPU, 16 GB RAM | Serverless GPU that scales to zero | Higher cost during continuous sustained traffic | Real-time GPU inference with variable traffic |
+| **Modal / OctoAI (Serverless GPU)**| **Pay-per-sec** (~$0.0007/sec) | 1x A10G or T4 GPU | Pure Python deployment, sub-second cold starts | Proprietary platform SDK | Variable bursty traffic requiring instant GPU scale |
+| **Hetzner Dedicated Server** | **$40 – $75/mo flat** | 8–16 CPU cores (Intel i7/AMD Ryzen), 64 GB RAM | **Flat monthly price**, unmetered gigabit network, raw performance | Setup fee, European locations | Massive CPU throughput (millions of daily calls) |
 
 ---
 
@@ -533,7 +561,30 @@ Hugging Face provides **16 GB RAM** and **2 vCPUs** completely free in their bas
 
 ---
 
-### 10.2 Serverless Tier: Google Cloud Run (Free / Pay-Per-Request)
+### 10.2 Free Tier: Cloudflare Tunnel (Zero-Cost Self-Hosting)
+If you have a spare Mac Mini, home PC, or old office server, you can host SafeStep 24/7 for **$0/month** without opening router ports or exposing your IP address.
+
+1. **Run SafeStep locally with Docker:**
+   ```bash
+   docker run -d --name safestep-api -p 8000:8000 safestep:latest
+   ```
+
+2. **Install Cloudflare Tunnel (`cloudflared`):**
+   ```bash
+   # Linux / macOS
+   curl -L --output cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+   chmod +x cloudflared
+   ```
+
+3. **Launch Quick Tunnel (Instant HTTPS):**
+   ```bash
+   ./cloudflared tunnel --url http://localhost:8000
+   ```
+   Cloudflare outputs a free secure URL: `https://your-tunnel-subdomain.trycloudflare.com` with enterprise DDoS mitigation and zero cloud cost.
+
+---
+
+### 10.3 Free / Serverless Tier: Google Cloud Run
 Google Cloud Run scales containers from 0 to 1,000+ instances automatically, incurring **$0 cost** when no requests arrive.
 
 1. **Authenticate and Set Project:**
@@ -565,12 +616,46 @@ Google Cloud Run scales containers from 0 to 1,000+ instances automatically, inc
 
 ---
 
-### 10.3 Budget VPS Tier: Hetzner / DigitalOcean (Docker Compose + SSL)
-For under **$15/month**, a dedicated virtual server from Hetzner (CPX21) or DigitalOcean runs SafeStep with high availability and no cold starts.
+### 10.4 Free / Hobby Tier: Koyeb & Fly.io
+
+#### Koyeb Deploy
+```bash
+koyeb app init safestep --docker docker.io/YOUR_DOCKERHUB/safestep:latest --ports 8000:http --routes /:8000
+```
+
+#### Fly.io Deploy
+```bash
+fly launch --image safestep:latest --port 8000 --vm-memory 2048
+fly deploy
+```
+
+---
+
+### 10.5 Free Temporary GPU: Google Colab / Kaggle with Cloudflared
+For demonstrating GPU-accelerated inference with zero cloud cost:
+
+1. Open a Google Colab notebook with **T4 GPU** enabled.
+2. Clone repo, install dependencies, and start server:
+   ```bash
+   !git clone https://github.com/SafeStep/Safestep-Models.git && cd Safestep-Models && pip install -r requirements.txt
+   !wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb && dpkg -i cloudflared-linux-amd64.deb
+   ```
+3. Run background server and tunnel:
+   ```python
+   import subprocess
+   subprocess.Popen(["python", "-m", "api.cli", "serve", "--host", "0.0.0.0", "--port", "8000"])
+   !cloudflared tunnel --url http://127.0.0.1:8000
+   ```
+   You get a temporary live GPU-backed endpoint running NVIDIA T4 for up to 12 hours free.
+
+---
+
+### 10.6 Budget VPS Tier: Hetzner / DigitalOcean / Contabo (Docker Compose + SSL)
+For under **$15/month**, a dedicated virtual server from Hetzner (CPX21), Contabo (VPS S), or DigitalOcean runs SafeStep with high availability and no cold starts.
 
 1. **Provision Server:**
    - OS: Ubuntu 24.04 LTS.
-   - Hardware: 3 vCPU, 4 GB RAM.
+   - Hardware: 3–4 vCPU, 4–8 GB RAM.
 
 2. **Install Docker & Docker Compose:**
    ```bash
@@ -630,7 +715,17 @@ For under **$15/month**, a dedicated virtual server from Hetzner (CPX21) or Digi
 
 ---
 
-### 10.4 High-Performance GPU Tier: RunPod / Lambda / AWS G5 (CUDA)
+### 10.7 Ultra-Budget On-Demand GPU: Vast.ai & RunPod Community
+Rent consumer GPUs (RTX 3090/4090) for **$0.15 – $0.35/hour** for heavy batch processing:
+
+```bash
+# Pull and start official SafeStep container with GPU passthrough
+vastai create instance INSTANCE_ID --image safestep:latest --disk 40 --env '-p 8000:8000'
+```
+
+---
+
+### 10.8 High-Performance GPU Tier: RunPod Secure / Lambda / AWS G5 (CUDA)
 For enterprise workloads demanding $<15$ ms response times across all detectors:
 
 1. **Provision GPU Instance:**
@@ -658,7 +753,56 @@ For enterprise workloads demanding $<15$ ms response times across all detectors:
 
 ---
 
-## 11. Production Operational Best Practices & Optimization
+## 11. Built-In Security Features & Hardening Checklist
+
+SafeStep implements defense-in-depth protections across the networking, application, and model layers:
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                      SafeStep Defense-in-Depth Layer                   │
+├─────────────────────────┬──────────────────────────────────────────────┤
+│ Network & API Layer     │ • Timing-attack resistant X-Admin-Token auth │
+│                         │ • Strict CORS domain restriction             │
+│                         │ • Anti-SSRF image_url scheme enforcement     │
+│                         │ • Streaming request size bounding (25MB cap) │
+│                         │ • Max batch size enforcement (128 items)     │
+├─────────────────────────┼──────────────────────────────────────────────┤
+│ Model & Runtime Layer   │ • weights_only=True on all torch.load calls  │
+│                         │ • Strict checkpoint path traversal guard     │
+│                         │ • Fail-closed mock fallback protection       │
+│                         │ • Zero eval(), exec(), or os.system() calls  │
+├─────────────────────────┼──────────────────────────────────────────────┤
+│ Container & OS Layer    │ • Unprivileged non-root execution (UID 10001)│
+│                         │ • Read-only volume mount support (:ro)       │
+│                         │ • Memory limit & process isolation           │
+└─────────────────────────┴──────────────────────────────────────────────┘
+```
+
+### Security Verification Checklist
+
+- [x] **Timing-Attack Resistant Admin Authentication**:
+  - The model reload endpoint `/models/{model_id}/reload` requires an `X-Admin-Token` header.
+  - Verification uses [`secrets.compare_digest`](file:///mnt/c/Users/mmati/Safestep-Models/api/app.py#L210-L215) to prevent side-channel timing attacks.
+- [x] **Safe PyTorch Deserialization (`weights_only=True`)**:
+  - Every `torch.load` call across CART, JAW, and Warhammer explicitly passes `weights_only=True` to eliminate arbitrary code execution via Python pickle deserialization.
+- [x] **Directory Traversal Protection**:
+  - In `reload_model`, user-supplied checkpoint paths are fully resolved via `Path(path).resolve()` and strictly verified to reside within approved parent directories via `resolved.is_relative_to(root)`. Path traversal attempts (e.g. `/etc` or `../../`) are rejected with HTTP 400.
+- [x] **Anti-SSRF & Memory Exhaustion Guards on URL Ingestion**:
+  - The `/api/v1/detect/image/json` endpoint validates `image_url` schemes, rejecting non-web protocols (such as `file://`, `gopher://`, or `ftp://`).
+  - Response streams are read in 64KB chunks and enforced against `max_upload_size_bytes` (25 MB), preventing OOM denial-of-service from unbounded payload bombs.
+- [x] **Strict Batch & Upload Size Bounds**:
+  - Batch endpoints enforce `max_batch_size = 128` (HTTP 400 on breach).
+  - Multipart uploads enforce `max_upload_size_bytes = 25 MB` (HTTP 413 Entity Too Large on breach).
+- [x] **Fail-Closed Production Safety**:
+  - With `SAFESTEP_MOCK_FALLBACK=false` (the default in production Docker), missing model checkpoints return HTTP 503 rather than silently fabricating mock predictions.
+- [x] **Unprivileged Container Execution**:
+  - The production `Dockerfile` creates and runs as an unprivileged user `safestep` (UID 10001), preventing container breakout escalation.
+- [x] **Zero Dynamic Execution**:
+  - The codebase contains zero calls to `eval()`, `exec()`, or `os.system()`.
+
+---
+
+## 12. Production Operational Best Practices & Optimization
 
 ### Worker Sizing & Concurrency
 - **CPU Deployments:** Set Uvicorn workers to:
@@ -669,7 +813,7 @@ For enterprise workloads demanding $<15$ ms response times across all detectors:
 ### Cold-Start Mitigation
 On serverless platforms (Cloud Run, AWS Lambda):
 - Keep `--min-instances 1` if sub-second first-request latency is required.
-- Set up a lightweight cron ping hitting `GET /health` every 4 minutes to keep container warm.
+- Set up a lightweight cron ping hitting `GET /health` every 4 minutes to keep the container warm.
 
 ### Monitoring & Telemetry
 - Inspect the `X-Process-Time-Ms` response header in client applications or reverse proxies to track 95th/99th percentile latencies.
