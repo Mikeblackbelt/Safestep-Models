@@ -218,3 +218,81 @@ class HealthResponse(BaseModel):
     uptime_seconds: float
     device: str
     models_loaded: Dict[str, bool]
+
+
+# ---------------------------------------------------------------------------
+# Corpus Ingestion & Groq Poisoning Assessment Schemas
+# ---------------------------------------------------------------------------
+
+class PoisoningReportSchema(BaseModel):
+    """Result of Groq LLM-as-a-Judge poisoning & accuracy analysis."""
+    poisoning_risk: float = Field(..., ge=0.0, le=1.0, description="Estimated risk score from 0.0 (Clean) to 1.0 (Poisoning)")
+    verdict: str = Field(..., description="'CLEAN', 'SUSPICIOUS', or 'POISONING_ATTEMPT'")
+    is_poisoning_suspected: bool
+    flags: List[str] = Field(default_factory=list)
+    groq_independent_label: Optional[str] = None
+    groq_user_agreement: Optional[bool] = None
+    groq_model_agreement: Optional[bool] = None
+    model_user_agreement: Optional[bool] = None
+    confidence: float
+    analysis_reasoning: str
+    evaluator_provider: str
+
+
+class CorpusInputRequest(BaseModel):
+    """Input payload for submitting user data with evaluation to the training corpus."""
+    model_type: str = Field(..., pattern="^(cart|jaw|phishing)$", description="Target model: 'cart', 'jaw', or 'phishing'")
+    user_eval: str = Field(..., min_length=1, max_length=50, description="User's ground-truth evaluation label (e.g. 'human', 'ai_generated', 'legitimate', 'phishing')")
+    text: Optional[str] = Field(None, max_length=100000, description="Raw text sample (CART or Phishing)")
+    url: Optional[str] = Field(None, max_length=2048, description="External URL to fetch text from or analyze")
+    image_path: Optional[str] = Field(None, max_length=2048, description="Local path to image (JAW)")
+    image_url: Optional[str] = Field(None, max_length=2048, description="External URL to fetch image from (JAW)")
+    image_base64: Optional[str] = Field(None, max_length=35000000, description="Base64 image data (JAW)")
+    check_poisoning: bool = Field(True, description="Whether to dynamically assess sample for data poisoning")
+    reject_poisoning: bool = Field(True, description="If True, rejects ingestion into corpus if high-risk poisoning is detected")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Optional metadata (e.g. evaluator ID, notes, tags)")
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "model_type": "cart",
+                "text": "This essay was written entirely by me for my college assignment.",
+                "user_eval": "human",
+                "check_poisoning": True,
+                "metadata": {"user_id": "auditor_42", "notes": "Verified authentic text"},
+            }
+        }
+    )
+
+
+class CorpusInputResponse(BaseModel):
+    """Response returned upon submitting data to the corpus."""
+    status: str = Field(..., description="'success' or 'rejected_poisoning'")
+    submission_id: str
+    model_type: str
+    canonical_label: str
+    binary_label: int
+    model_prediction: Optional[Dict[str, Any]] = None
+    model_user_agreement: Optional[bool] = None
+    poisoning_assessment: Optional[PoisoningReportSchema] = None
+    added_to_corpus: bool
+    corpus_file: Optional[str] = None
+    timestamp: str
+
+
+class GroqAssessRequest(BaseModel):
+    """Request payload for direct Groq data poisoning & model accuracy assessment."""
+    text: Optional[str] = Field(None, max_length=100000, description="Text to assess")
+    url: Optional[str] = Field(None, max_length=2048, description="External URL to fetch text from")
+    user_eval: str = Field(..., max_length=50, description="Evaluation label assigned to the text")
+    model_type: str = Field("cart", pattern="^(cart|jaw|phishing)$", description="Target model")
+    groq_api_key: Optional[str] = Field(None, max_length=256, description="Optional Groq API key override")
+
+
+class CorpusAnalyticsResponse(BaseModel):
+    """Comprehensive analytics and metrics for user-contributed corpora."""
+    total_submissions: int
+    models: Dict[str, Any]
+    poisoning_summary: Dict[str, Any]
+    overall_model_agreement_rate: Optional[float] = None
+    recent_submissions: List[Dict[str, Any]] = Field(default_factory=list)

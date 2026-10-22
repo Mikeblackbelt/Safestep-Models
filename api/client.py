@@ -19,6 +19,11 @@ from api.schemas import (
     PhishingDetectionResult,
     TextDetectionResult,
     UnifiedDetectionResponse,
+    CorpusInputRequest,
+    CorpusInputResponse,
+    GroqAssessRequest,
+    PoisoningReportSchema,
+    CorpusAnalyticsResponse,
 )
 
 
@@ -178,3 +183,82 @@ class SafeStepClient:
         resp = self._client.post("/api/v1/detect/unified", data=data, files=files)
         resp.raise_for_status()
         return UnifiedDetectionResponse(**resp.json())
+
+    def contribute_data(
+        self,
+        model_type: str,
+        user_eval: str,
+        text: Optional[str] = None,
+        url: Optional[str] = None,
+        image: Optional[Union[str, Path, bytes]] = None,
+        image_url: Optional[str] = None,
+        check_poisoning: bool = True,
+        reject_poisoning: bool = True,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> CorpusInputResponse:
+        """
+        Contribute user-evaluated data sample to model corpus.
+        Supports text, external URL, image path/bytes, or image URL.
+        """
+        if image is not None:
+            data = {"user_eval": user_eval}
+            if metadata and "notes" in metadata:
+                data["notes"] = str(metadata["notes"])
+            if isinstance(image, (str, Path)):
+                p = Path(image)
+                with open(p, "rb") as f:
+                    content = f.read()
+                files = {"file": (p.name, content, "image/octet-stream")}
+            elif isinstance(image, bytes):
+                files = {"file": ("uploaded.png", image, "image/png")}
+            else:
+                raise ValueError(f"Unsupported image type: {type(image)}")
+            resp = self._client.post("/api/v1/data/input/upload", data=data, files=files)
+            resp.raise_for_status()
+            return CorpusInputResponse(**resp.json())
+
+        payload = {
+            "model_type": model_type,
+            "user_eval": user_eval,
+            "text": text,
+            "url": url,
+            "image_url": image_url,
+            "check_poisoning": check_poisoning,
+            "reject_poisoning": reject_poisoning,
+            "metadata": metadata or {},
+        }
+        resp = self._client.post("/api/v1/data/input", json=payload)
+        resp.raise_for_status()
+        return CorpusInputResponse(**resp.json())
+
+    def assess_poisoning(
+        self,
+        user_eval: str,
+        text: Optional[str] = None,
+        url: Optional[str] = None,
+        model_type: str = "cart",
+        groq_api_key: Optional[str] = None,
+    ) -> PoisoningReportSchema:
+        """
+        Dynamically evaluate input text against Groq LLM-as-a-Judge for
+        data poisoning, label inversion, and agreement with model predictions.
+        """
+        payload = {
+            "text": text,
+            "url": url,
+            "user_eval": user_eval,
+            "model_type": model_type,
+            "groq_api_key": groq_api_key,
+        }
+        resp = self._client.post("/api/v1/data/assess-poisoning", json=payload)
+        resp.raise_for_status()
+        return PoisoningReportSchema(**resp.json())
+
+    def get_corpus_analytics(self) -> CorpusAnalyticsResponse:
+        """
+        Fetch aggregated statistics and poisoning metrics for user-contributed corpora.
+        """
+        resp = self._client.get("/api/v1/data/corpus/analytics")
+        resp.raise_for_status()
+        return CorpusAnalyticsResponse(**resp.json())
+

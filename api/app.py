@@ -4,6 +4,7 @@ Provides endpoints for single and batch text detection, image detection, and mod
 """
 
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 import io
 import logging
 import secrets
@@ -38,14 +39,21 @@ from api.schemas import (
     ModelStatus,
     BatchPhishingDetectionRequest,
     BatchPhishingDetectionResponse,
+    CorpusAnalyticsResponse,
+    CorpusInputRequest,
+    CorpusInputResponse,
+    GroqAssessRequest,
     PhishingDetectionRequest,
     PhishingDetectionResult,
+    PoisoningReportSchema,
     ReloadModelRequest,
     TextDetectionRequest,
     TextDetectionResult,
     UnifiedDetectionJsonRequest,
     UnifiedDetectionResponse,
 )
+from api.corpus_manager import corpus_manager, normalize_user_eval
+from api.groq_evaluator import groq_evaluator, PoisoningAssessmentResult
 from api import security
 from api.service import service
 
@@ -690,3 +698,312 @@ def detect_unified_json(payload: UnifiedDetectionJsonRequest):
     except Exception as e:
         logger.error(f"Error in detect_unified_json endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error during unified detection.")
+
+
+# ---------------------------------------------------------------------------
+# Corpus Data Ingestion & Groq Poisoning Assessment Endpoints
+# ---------------------------------------------------------------------------
+
+@app.post(
+    "/api/v1/data/input",
+    response_model=CorpusInputResponse,
+    summary="Submit user data & ground truth evaluation to model corpus",
+    tags=["Corpus Data Ingestion & Active Learning"],
+)
+def input_user_data(payload: CorpusInputRequest):
+    """
+    Ingest user data and user evaluation into the model training corpus.
+    Dynamically assesses data for poisoning, backdoors, and model-evaluation agreement.
+    """
+    model_type = payload.model_type.lower().strip()
+
+    # 1. Normalize evaluation label
+    try:
+        canonical_label, binary_label = normalize_user_eval(model_type, payload.user_eval)
+    except ValueError as ve:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
+
+    content_str = None
+    is_image = False
+    source_url = payload.url
+
+    # 2. Extract content based on model type
+    if model_type in ("cart", "phishing"):
+        if payload.url:
+            content_str = security.fetch_external_text(payload.url)
+            if payload.text:
+                content_str = f"{payload.text}\n\n{content_str}"
+        elif payload.text:
+            content_str = payload.text
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Model '{model_type}' requires 'text' or 'url' in payload.",
+            )
+
+    elif model_type == "jaw":
+        is_image = True
+        img_bytes = None
+        if payload.image_path:
+            import tempfile
+            resolved = Path(payload.image_path).resolve()
+            allowed_roots = [
+                Path.cwd().resolve(),
+                Path("data").resolve(),
+                Path("tests").resolve(),
+                Path(tempfile.gettempdir()).resolve(),
+            ]
+            if not any(resolved.is_relative_to(root) for root in allowed_roots) or not resolved.is_file():
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid image_path.")
+            with open(resolved, "rb") as f:
+                img_bytes = f.read()
+        elif payload.image_base64:
+            import base64
+            try:
+                b64_data = payload.image_base64
+                if "," in b64_data:
+                    b64_data = b64_data.split(",", 1)[1]
+                img_bytes = base64.b64decode(b64_data)
+            except Exception as e:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid base64 image data: {e}")
+        elif payload.image_url:
+            source_url = payload.image_url
+            img_bytes = security.fetch_external_image(payload.image_url)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Model 'jaw' requires 'image_path', 'image_base64', or 'image_url'.",
+            )
+
+        # Validate and save image to disk
+        try:
+            _, rel_path = corpus_manager.save_image_sample(img_bytes, canonical_label)
+            content_str = rel_path
+        except Exception as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to process image: {e}")
+
+    # 3. Obtain local SafeStep model prediction for comparison
+    model_prediction = None
+    try:
+        if model_type == "cart":
+            pred = service.predict_text(content_str)
+            model_prediction = pred.model_dump()
+        elif model_type == "phishing":
+            pred = service.predict_phishing(content_str)
+            model_prediction = pred.model_dump()
+        elif model_type == "jaw":
+            pred = service.predict_image(corpus_manager.base_dir / content_str)
+            model_prediction = pred.model_dump()
+    except Exception as e:
+        logger.warning(f"Could not run local model prediction for submission: {e}")
+
+    # 4. Check poisoning dynamically using Groq LLM-as-a-Judge
+    poisoning_assessment = None
+    if payload.check_poisoning and not is_image:
+        assessment_res = groq_evaluator.assess_poisoning(
+            text=content_str,
+            user_eval=canonical_label,
+            model_type=model_type,
+            model_prediction=model_prediction,
+        )
+        poisoning_assessment = PoisoningReportSchema(
+            poisoning_risk=assessment_res.poisoning_risk,
+            verdict=assessment_res.verdict,
+            is_poisoning_suspected=assessment_res.is_poisoning_suspected,
+            flags=assessment_res.flags,
+            groq_independent_label=assessment_res.groq_independent_label,
+            groq_user_agreement=assessment_res.groq_user_agreement,
+            groq_model_agreement=assessment_res.groq_model_agreement,
+            model_user_agreement=assessment_res.model_user_agreement,
+            confidence=assessment_res.confidence,
+            analysis_reasoning=assessment_res.analysis_reasoning,
+            evaluator_provider=assessment_res.evaluator_provider,
+        )
+
+    # 5. Check if poisoning is detected and should be rejected
+    is_rejected = (
+        payload.reject_poisoning
+        and poisoning_assessment is not None
+        and poisoning_assessment.verdict == "POISONING_ATTEMPT"
+    )
+
+    if is_rejected:
+        logger.warning(f"Submission rejected due to poisoning risk: {poisoning_assessment.flags}")
+        sub_id = f"rej_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+        return CorpusInputResponse(
+            status="rejected_poisoning",
+            submission_id=sub_id,
+            model_type=model_type,
+            canonical_label=canonical_label,
+            binary_label=binary_label,
+            model_prediction=model_prediction,
+            model_user_agreement=(
+                model_prediction.get("label", "").lower() == canonical_label
+                if model_prediction else None
+            ),
+            poisoning_assessment=poisoning_assessment,
+            added_to_corpus=False,
+            corpus_file=None,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    # 6. Append to corpus
+    model_agreed = (
+        model_prediction.get("label", "").lower() == canonical_label
+        if model_prediction else None
+    )
+    rec = corpus_manager.append_record(
+        model_type=model_type,
+        content=content_str,
+        canonical_label=canonical_label,
+        binary_label=binary_label,
+        is_image=is_image,
+        source_url=source_url,
+        model_prediction=model_prediction,
+        model_agreed=model_agreed,
+        poisoning_score=poisoning_assessment.poisoning_risk if poisoning_assessment else None,
+        poisoning_verdict=poisoning_assessment.verdict if poisoning_assessment else None,
+        metadata=payload.metadata,
+    )
+
+    return CorpusInputResponse(
+        status="success",
+        submission_id=rec["id"],
+        model_type=model_type,
+        canonical_label=canonical_label,
+        binary_label=binary_label,
+        model_prediction=model_prediction,
+        model_user_agreement=model_agreed,
+        poisoning_assessment=poisoning_assessment,
+        added_to_corpus=True,
+        corpus_file=str(corpus_manager._get_corpus_file(model_type)),
+        timestamp=rec["timestamp"],
+    )
+
+
+@app.post(
+    "/api/v1/data/input/upload",
+    response_model=CorpusInputResponse,
+    summary="Submit uploaded image with evaluation to JAW corpus",
+    tags=["Corpus Data Ingestion & Active Learning"],
+)
+async def upload_user_image(
+    file: UploadFile = File(..., description="Image file to add to corpus"),
+    user_eval: str = Form(..., description="'authentic' or 'ai_generated'"),
+    notes: Optional[str] = Form(None, description="Optional notes"),
+):
+    """Multipart upload endpoint to contribute images with ground truth to JAW corpus."""
+    try:
+        canonical_label, binary_label = normalize_user_eval("jaw", user_eval)
+    except ValueError as ve:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
+
+    content = await file.read()
+    if len(content) > default_api_config.max_upload_size_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Uploaded image exceeds size limit.",
+        )
+
+    try:
+        _, rel_path = corpus_manager.save_image_sample(content, canonical_label)
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to process image: {e}")
+
+    model_pred = None
+    try:
+        pred = service.predict_image(content)
+        model_pred = pred.model_dump()
+    except Exception as e:
+        logger.warning(f"Could not run JAW model on uploaded image: {e}")
+
+    model_agreed = (model_pred.get("label", "").lower() == canonical_label) if model_pred else None
+    rec = corpus_manager.append_record(
+        model_type="jaw",
+        content=rel_path,
+        canonical_label=canonical_label,
+        binary_label=binary_label,
+        is_image=True,
+        model_prediction=model_pred,
+        model_agreed=model_agreed,
+        metadata={"filename": file.filename, "notes": notes} if notes else {"filename": file.filename},
+    )
+
+    return CorpusInputResponse(
+        status="success",
+        submission_id=rec["id"],
+        model_type="jaw",
+        canonical_label=canonical_label,
+        binary_label=binary_label,
+        model_prediction=model_pred,
+        model_user_agreement=model_agreed,
+        poisoning_assessment=None,
+        added_to_corpus=True,
+        corpus_file=str(corpus_manager._get_corpus_file("jaw")),
+        timestamp=rec["timestamp"],
+    )
+
+
+@app.post(
+    "/api/v1/data/assess-poisoning",
+    response_model=PoisoningReportSchema,
+    summary="Dynamically assess data for poisoning and evaluate model accuracy with Groq",
+    tags=["Corpus Data Ingestion & Active Learning"],
+)
+def assess_data_poisoning(payload: GroqAssessRequest):
+    """
+    On-demand endpoint to evaluate input text against Groq LLM-as-a-Judge for
+    data poisoning, label inversion, and agreement with local SafeStep model predictions.
+    """
+    text = payload.text
+    if not text and payload.url:
+        text = security.fetch_external_text(payload.url)
+    elif not text:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Must provide 'text' or 'url'.")
+
+    model_pred = None
+    try:
+        if payload.model_type == "cart":
+            pred = service.predict_text(text)
+            model_pred = pred.model_dump()
+        elif payload.model_type == "phishing":
+            pred = service.predict_phishing(text)
+            model_pred = pred.model_dump()
+    except Exception as e:
+        logger.warning(f"Could not compute model prediction for poisoning assessment: {e}")
+
+    res = groq_evaluator.assess_poisoning(
+        text=text,
+        user_eval=payload.user_eval,
+        model_type=payload.model_type,
+        model_prediction=model_pred,
+        custom_api_key=payload.groq_api_key,
+    )
+
+    return PoisoningReportSchema(
+        poisoning_risk=res.poisoning_risk,
+        verdict=res.verdict,
+        is_poisoning_suspected=res.is_poisoning_suspected,
+        flags=res.flags,
+        groq_independent_label=res.groq_independent_label,
+        groq_user_agreement=res.groq_user_agreement,
+        groq_model_agreement=res.groq_model_agreement,
+        model_user_agreement=res.model_user_agreement,
+        confidence=res.confidence,
+        analysis_reasoning=res.analysis_reasoning,
+        evaluator_provider=res.evaluator_provider,
+    )
+
+
+@app.get(
+    "/api/v1/data/corpus/analytics",
+    response_model=CorpusAnalyticsResponse,
+    summary="Get aggregated statistics and poisoning metrics for user-contributed corpora",
+    tags=["Corpus Data Ingestion & Active Learning"],
+)
+def get_corpus_analytics():
+    """
+    Returns statistics on user data contributions, model vs user accuracy/agreement,
+    poisoning detection rates, and recent submissions.
+    """
+    return CorpusAnalyticsResponse(**corpus_manager.get_analytics())
